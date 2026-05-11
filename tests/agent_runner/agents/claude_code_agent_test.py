@@ -1169,6 +1169,36 @@ class TestBedrockMode:
         )
         assert agent._bedrock is False
 
+    def test_build_cli_args_for_retry_continues_latest_session(
+        self, mock_cost_limits, mock_pricing, mock_credential
+    ):
+        agent = ClaudeCodeAgent(
+            problem_name="test-problem",
+            image="test-image",
+            verbose=False,
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=mock_credential,
+            binary="claude",
+            model="claude-test",
+            timeout=None,
+            settings={},
+            env={},
+            extra_args=[],
+            append_system_prompt=None,
+            allowed_tools=[],
+            disallowed_tools=[],
+            permission_mode=None,
+            base_url=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            max_output_tokens=None,
+        )
+
+        args = agent._build_cli_args(resume=True)
+
+        assert "--continue" in args
+
     def test_bedrock_env_vars_set_in_prepare_runtime(
         self,
         mock_cost_limits,

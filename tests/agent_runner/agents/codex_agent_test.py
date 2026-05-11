@@ -330,6 +330,29 @@ class TestCodexAgent:
         model_idx = command.index("--model")
         assert command[model_idx + 1] == "gpt-4"
 
+    def test_build_command_for_retry_resumes_last_exec_session(
+        self, mock_cost_limits, mock_pricing
+    ):
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+        )
+
+        command = agent._build_command("continue", resume=True)
+
+        assert command[:4] == ["codex", "exec", "resume", "--last"]
+
     def test_build_command_with_thinking(self, mock_cost_limits, mock_pricing):
         """_build_command includes thinking when specified."""
         agent = CodexAgent(

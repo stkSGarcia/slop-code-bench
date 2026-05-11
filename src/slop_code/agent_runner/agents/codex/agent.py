@@ -13,6 +13,7 @@ from pathlib import Path
 from jinja2 import Template
 from pydantic import Field
 
+from slop_code.agent_runner.agent import RETRY_PROMPT
 from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.agent_runner.agents.cli_utils import AgentCommandResult
@@ -303,20 +304,26 @@ class CodexAgent(Agent):
 
         runtime_result = command_result.result
         if runtime_result is None:
+            message = "Codex process failed to start"
             self.log.error(
-                "Codex process failed to start",
-                error_message=command_result.error_message,
+                "agent.codex.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+                stdout=command_result.stdout,
+                stderr=command_result.stderr,
             )
-            self.log.error("STDOUT", stdout=command_result.stdout)
-            self.log.error("STDERR", stderr=command_result.stderr)
-            raise AgentError("Codex process failed to start")
+            raise AgentError(message)
         if runtime_result.timed_out:
             message = (
                 f"Codex process timed out after {self.timeout}s."
                 if self.timeout is not None
                 else "Codex process timed out."
             )
-            self.log.error("agent.codex.timeout", timeout=self.timeout)
+            self.log.error(
+                "agent.codex.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
             raise AgentError(message)
 
         if runtime_result.exit_code != 0:
@@ -325,6 +332,58 @@ class CodexAgent(Agent):
                 message = f"{message}\n--- Stderr ---\n{runtime_result.stderr.strip()}"
             self.log.error(
                 "agent.codex.exit",
+                error_message=message,
+                exit_code=runtime_result.exit_code,
+            )
+            raise AgentError(message)
+
+    def retry(self) -> None:
+        self._last_prompt = RETRY_PROMPT
+        self._last_command = None
+
+        self.log.info(
+            "agent.codex.retry",
+            workspace=str(self.session.working_dir),
+            environment=self.session.spec.type,
+        )
+
+        command_result = self._run_invocation(RETRY_PROMPT, resume=True)
+        self._last_command = command_result
+
+        self._sync_usage(command_result.usage_totals)
+
+        runtime_result = command_result.result
+        if runtime_result is None:
+            message = "Codex retry process failed to start"
+            self.log.error(
+                "agent.codex.retry.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+            )
+            raise AgentError(message)
+        if runtime_result.timed_out:
+            message = (
+                f"Codex retry process timed out after {self.timeout}s."
+                if self.timeout is not None
+                else "Codex retry process timed out."
+            )
+            self.log.error(
+                "agent.codex.retry.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
+            raise AgentError(message)
+
+        if runtime_result.exit_code != 0:
+            message = (
+                "Codex retry process failed with exit code "
+                f"{runtime_result.exit_code}"
+            )
+            if runtime_result.stderr:
+                message = f"{message}\n--- Stderr ---\n{runtime_result.stderr.strip()}"
+            self.log.error(
+                "agent.codex.retry.exit",
+                error_message=message,
                 exit_code=runtime_result.exit_code,
             )
             raise AgentError(message)
@@ -332,9 +391,14 @@ class CodexAgent(Agent):
     def _run_invocation(
         self,
         task: str,
+        *,
+        resume: bool = False,
     ) -> AgentCommandResult:
         """Execute a Codex CLI invocation and return results."""
-        command, env_overrides = self._prepare_runtime_execution(task)
+        command, env_overrides = self._prepare_runtime_execution(
+            task,
+            resume=resume,
+        )
 
         if self._session is None:
             raise AgentError("CodexAgent has not been set up with a session")
@@ -487,6 +551,8 @@ class CodexAgent(Agent):
     def _prepare_runtime_execution(
         self,
         task: str,
+        *,
+        resume: bool = False,
     ) -> tuple[list[str], dict[str, str]]:
         """Prepare command and environment overrides for runtime execution."""
         env_overrides = {key: str(value) for key, value in self.env.items()}
@@ -499,22 +565,27 @@ class CodexAgent(Agent):
             env_overrides[self.credential.destination_key] = (
                 self.credential.value
             )
-        command = self._build_command(task)
+        command = self._build_command(task, resume=resume)
 
         return command, env_overrides
 
     def _build_command(
         self,
         prompt: str,
+        *,
+        resume: bool = False,
     ) -> list[str]:
-        command = [
-            self.binary,
-            "exec",
-            shlex.quote(prompt),
-            "--skip-git-repo-check",
-            "--json",
-            "--dangerously-bypass-approvals-and-sandbox",
-        ]
+        command = [self.binary, "exec"]
+        if resume:
+            command.extend(["resume", "--last"])
+        command.extend(
+            [
+                shlex.quote(prompt),
+                "--skip-git-repo-check",
+                "--json",
+                "--dangerously-bypass-approvals-and-sandbox",
+            ]
+        )
         if self.model:
             command.extend(["--model", self.model])
             if self.model == "gpt-5.2-codex":

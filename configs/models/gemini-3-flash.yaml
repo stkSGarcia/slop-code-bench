@@ -1,0 +1,19 @@
+internal_name: gemini-3-flash-preview
+provider: google
+provider_slugs:
+  openrouter: google/gemini-3-flash-preview
+pricing:
+  input: 0.50
+  output: 3.0
+  cache_read: 0.05
+  cache_write: 0.0
+aliases:
+  - gemini-3-flash
+
+agent_specific:
+  mini_swe:
+    model_name: google/gemini-3-flash-preview
+    model_class: litellm
+
+  opencode:
+    provider_name: google

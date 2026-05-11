@@ -14,7 +14,9 @@ from slop_code.agent_runner.agents.gemini import GeminiConfig
 from slop_code.agent_runner.credentials import CredentialType
 from slop_code.agent_runner.credentials import ProviderCredential
 from slop_code.agent_runner.models import AgentCostLimits
+from slop_code.agent_runner.models import AgentError
 from slop_code.common.llms import APIPricing
+from slop_code.common.llms import APIPricingTier
 from slop_code.common.llms import ModelDefinition
 from slop_code.execution import DockerEnvironmentSpec
 from slop_code.execution.runtime import RuntimeEvent
@@ -32,8 +34,8 @@ class FakeRuntime:
         self,
         command: str,
         env: dict,
-        stdin: str | list[str] | None,
-        timeout: float | None,
+        stdin: str | list[str] | None = None,
+        timeout: float | None = None,
     ) -> Iterable[RuntimeEvent]:
         self.last_stream_args = ((command, env, stdin, timeout), {})
         yield from self.events
@@ -148,6 +150,7 @@ class TestGeminiConfig:
         assert config.binary == "gemini"
         assert config.extra_args == []
         assert config.env == {}
+        assert config.use_vertex is False
         assert config.timeout is None
         # Config no longer has model - it comes from ModelDefinition
 
@@ -176,6 +179,30 @@ class TestGeminiAgent:
 
         assert isinstance(agent, GeminiAgent)
         assert agent.binary == "gemini"
+        assert agent.use_vertex is False
+
+    def test_from_config_passes_vertex_option(
+        self, mock_cost_limits, mock_model_def, mock_credential
+    ):
+        """_from_config forwards the Vertex option to the agent."""
+        config = GeminiConfig(
+            type="gemini",
+            version="1.0.0",
+            cost_limits=mock_cost_limits,
+            use_vertex=True,
+        )
+
+        agent = GeminiAgent._from_config(
+            config=config,
+            model=mock_model_def,
+            credential=mock_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert isinstance(agent, GeminiAgent)
+        assert agent.use_vertex is True
 
     def test_from_config_requires_image(
         self, mock_cost_limits, mock_model_def, mock_credential
@@ -229,6 +256,135 @@ class TestGeminiAgent:
 
         # After cleanup, session is None
         assert agent._session is None
+
+    def test_get_volumes_writes_vertex_settings_without_auth(
+        self, mock_cost_limits, mock_pricing
+    ):
+        """Vertex mode mounts a settings.json even without file auth."""
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=60,
+            extra_args=[],
+            env={},
+            use_vertex=True,
+        )
+
+        mounts = agent._get_volumes()
+
+        assert len(mounts) == 1
+        mount_path = Path(next(iter(mounts)))
+        assert (mount_path / "settings.json").read_text() == (
+            '{"selectedAuthType": "vertex-ai"}\n'
+        )
+        agent.cleanup()
+
+    def test_get_volumes_overwrites_stale_settings_for_vertex(
+        self, tmp_path, mock_cost_limits, mock_pricing
+    ):
+        """Vertex mode removes stale settings from the runtime copy."""
+        gemini_dir = tmp_path / ".gemini"
+        gemini_dir.mkdir()
+        auth_file = gemini_dir / "oauth_creds.json"
+        settings_file = gemini_dir / "settings.json"
+        auth_file.write_text("{}")
+        settings_file.write_text(
+            '{"selectedAuthType": "oauth-personal", "stale": true}\n'
+        )
+        credential = ProviderCredential(
+            provider="gemini_auth",
+            credential_type=CredentialType.FILE,
+            value=str(auth_file),
+            source=str(auth_file),
+            destination_key="GOOGLE_APPLICATION_CREDENTIALS",
+        )
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=credential,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=60,
+            extra_args=[],
+            env={},
+            use_vertex=True,
+        )
+
+        mounts = agent._get_volumes()
+
+        mount_path = Path(next(iter(mounts)))
+        assert (mount_path / "settings.json").read_text() == (
+            '{"selectedAuthType": "vertex-ai"}\n'
+        )
+        assert settings_file.read_text() == (
+            '{"selectedAuthType": "oauth-personal", "stale": true}\n'
+        )
+        agent.cleanup()
+
+    def test_run_invocation_preserves_split_model_cost(
+        self, tmp_path, mock_cost_limits
+    ):
+        """Gemini pricing tiers apply to each reported model bucket."""
+        pricing = APIPricing(
+            input=4.0,
+            output=18.0,
+            cache_read=0.4,
+            prompt_tiers=[
+                APIPricingTier(
+                    max_input_tokens=200000,
+                    input=2.0,
+                    output=12.0,
+                    cache_read=0.2,
+                )
+            ],
+        )
+        result_line = (
+            '{"type":"result","status":"success",'
+            '"stats":{"input_tokens":300000,"output_tokens":2000,'
+            '"cached":100000,"input":200000,"total_tokens":303000,'
+            '"models":{'
+            '"gemini-3.1-pro-preview":{"input_tokens":150000,'
+            '"output_tokens":1000,"cached":50000,"input":100000,'
+            '"total_tokens":151500},'
+            '"gemini-3-flash-preview":{"input_tokens":150000,'
+            '"output_tokens":1000,"cached":50000,"input":100000,'
+            '"total_tokens":151500}}}}'
+        )
+        runtime = FakeRuntime()
+        runtime.events = [RuntimeEvent(kind="stdout", text=f"{result_line}\n")]
+        session = FakeSession(runtime=runtime, working_dir=tmp_path)
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-3.1-pro-preview",
+            timeout=60,
+            extra_args=[],
+            env={},
+        )
+        agent.setup(session)
+
+        result = agent._run_invocation("solve task")
+        agent._sync_usage(result.usage_totals)
+
+        assert result.usage_totals["input_tokens"] == 300000
+        assert result.usage_totals["output_tokens"] == 3000
+        assert result.usage_totals["reasoning_tokens"] == 1000
+        assert result.usage_totals["cost_micros"] == 456000
+        assert agent.usage.cost == pytest.approx(0.456)
 
     def test_reset_clears_state(self, tmp_path, mock_cost_limits, mock_pricing):
         """reset() clears internal state."""
@@ -285,6 +441,7 @@ class TestGeminiAgent:
         assert "--yolo" in command  # YOLO mode
         assert "--output-format" in command
         assert "stream-json" in command
+        assert "--skip-trust" in command
 
     def test_build_command_with_model(self, mock_cost_limits, mock_pricing):
         """_build_command includes model when specified."""
@@ -305,6 +462,29 @@ class TestGeminiAgent:
         command = agent._build_command("do something")
 
         assert "--model=gemini-2.5-flash" in command
+
+    def test_build_command_for_retry_resumes_latest_session(
+        self, mock_cost_limits, mock_pricing
+    ):
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model=None,
+            timeout=None,
+            extra_args=[],
+            env={},
+        )
+
+        command = agent._build_command("continue", resume=True)
+
+        assert "--resume" in command
+        resume_idx = command.index("--resume")
+        assert command[resume_idx + 1] == "latest"
 
     def test_build_command_strips_provider_prefix_from_model(
         self, mock_cost_limits, mock_pricing
@@ -352,12 +532,33 @@ class TestGeminiAgent:
         assert "--custom-flag" in command
         assert "value" in command
 
+    def test_build_command_does_not_duplicate_skip_trust(
+        self, mock_cost_limits, mock_pricing
+    ):
+        """_build_command keeps the default trust bypass unique."""
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model=None,
+            timeout=None,
+            extra_args=["--skip-trust"],
+            env={},
+        )
+
+        command = agent._build_command("do something")
+
+        assert command.count("--skip-trust") == 1
+
     def test_prepare_runtime_execution_passes_google_auth_env_vars(
         self, mock_cost_limits, mock_pricing, monkeypatch
     ):
-        """_prepare_runtime_execution forwards Harbor auth env vars."""
+        """_prepare_runtime_execution forwards Gemini auth env vars."""
         monkeypatch.setenv("GOOGLE_API_KEY", "google-key")
-        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
 
         agent = GeminiAgent(
             problem_name="test-problem",
@@ -375,7 +576,140 @@ class TestGeminiAgent:
 
         _, env_overrides = agent._prepare_runtime_execution("do something")
         assert env_overrides["GOOGLE_API_KEY"] == "google-key"
+
+    def test_prepare_runtime_execution_does_not_pass_vertex_env_vars_by_default(
+        self, mock_cost_limits, mock_pricing, monkeypatch
+    ):
+        """Vertex env vars are only forwarded when Vertex mode is enabled."""
+        monkeypatch.setenv("GOOGLE_GENAI_USE_VERTEXAI", "true")
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+        )
+
+        _, env_overrides = agent._prepare_runtime_execution("do something")
+        assert "GOOGLE_GENAI_USE_VERTEXAI" not in env_overrides
+        assert "GOOGLE_CLOUD_PROJECT" not in env_overrides
+        assert "GOOGLE_CLOUD_LOCATION" not in env_overrides
+
+    def test_prepare_runtime_execution_passes_vertex_env_vars_when_enabled(
+        self, mock_cost_limits, mock_pricing, monkeypatch
+    ):
+        """Vertex mode forwards required Google Cloud env vars."""
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+            use_vertex=True,
+        )
+
+        _, env_overrides = agent._prepare_runtime_execution("do something")
+        assert env_overrides["GOOGLE_GENAI_USE_VERTEXAI"] == "true"
         assert env_overrides["GOOGLE_CLOUD_PROJECT"] == "test-project"
+        assert env_overrides["GOOGLE_CLOUD_LOCATION"] == "us-central1"
+
+    def test_prepare_runtime_execution_renames_gemini_key_for_vertex(
+        self, mock_cost_limits, mock_pricing, mock_credential, monkeypatch
+    ):
+        """Vertex mode exports Gemini API key credentials as GOOGLE_API_KEY."""
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        monkeypatch.setenv("GEMINI_API_KEY", "host-gemini-key")
+
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=mock_credential,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+            use_vertex=True,
+        )
+
+        _, env_overrides = agent._prepare_runtime_execution("do something")
+        assert env_overrides["GOOGLE_API_KEY"] == "test-api-key"
+        assert "GEMINI_API_KEY" not in env_overrides
+
+    def test_prepare_runtime_execution_maps_host_gemini_key_for_vertex(
+        self, mock_cost_limits, mock_pricing, monkeypatch
+    ):
+        """Vertex mode maps host GEMINI_API_KEY to GOOGLE_API_KEY."""
+        monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        monkeypatch.setenv("GEMINI_API_KEY", "host-gemini-key")
+        monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+            use_vertex=True,
+        )
+
+        _, env_overrides = agent._prepare_runtime_execution("do something")
+        assert env_overrides["GOOGLE_API_KEY"] == "host-gemini-key"
+        assert "GEMINI_API_KEY" not in env_overrides
+
+    def test_prepare_runtime_execution_requires_vertex_env_vars(
+        self, mock_cost_limits, mock_pricing, monkeypatch
+    ):
+        """Vertex mode fails early when required env vars are missing."""
+        monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+        monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+
+        agent = GeminiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="gemini",
+            model="gemini-2.5-flash",
+            timeout=None,
+            extra_args=[],
+            env={},
+            use_vertex=True,
+        )
+
+        with pytest.raises(AgentError, match="GOOGLE_CLOUD_PROJECT"):
+            agent._prepare_runtime_execution("do something")
 
     def test_save_artifacts_writes_files(
         self, tmp_path, mock_cost_limits, mock_pricing
@@ -488,10 +822,94 @@ class TestGeminiAgentParseLine:
         expected_cost = (1000 * 0.15 + 50 * 0.60) / 1_000_000
         assert abs(cost - expected_cost) < 0.0001
 
+    def test_parse_line_result_keeps_input_tokens_as_reported(
+        self, mock_pricing
+    ):
+        """Gemini input_tokens already includes cached prompt tokens."""
+        line = (
+            '{"type":"result","status":"success",'
+            '"stats":{"input_tokens":729324,"output_tokens":6795,'
+            '"cached":499835,"input":229489}}'
+        )
+
+        cost, tokens, payload = GeminiAgent.parse_line(line, mock_pricing)
+
+        assert cost is not None
+        assert tokens is not None
+        assert payload is not None
+        assert tokens.input == 729324
+        assert tokens.cache_read == 499835
+        expected_cost = (
+            (229489 * 0.15) + (6795 * 0.60) + (499835 * 0.0375)
+        ) / 1_000_000
+        assert cost == pytest.approx(expected_cost)
+
+    def test_parse_line_result_counts_total_token_residual_as_reasoning(
+        self, mock_pricing
+    ):
+        """Gemini reports hidden reasoning in total_tokens only."""
+        line = (
+            '{"type":"result","status":"success",'
+            '"stats":{"input_tokens":729324,"output_tokens":6795,'
+            '"cached":499835,"input":229489,"total_tokens":748618}}'
+        )
+
+        cost, tokens, payload = GeminiAgent.parse_line(line, mock_pricing)
+
+        assert cost is not None
+        assert tokens is not None
+        assert payload is not None
+        assert tokens.input == 729324
+        assert tokens.output == 19294
+        assert tokens.reasoning == 12499
+        assert tokens.cache_read == 499835
+        expected_cost = (
+            (229489 * 0.15) + (19294 * 0.60) + (499835 * 0.0375)
+        ) / 1_000_000
+        assert cost == pytest.approx(expected_cost)
+
+    def test_parse_line_result_prices_reported_model_buckets_separately(self):
+        """Gemini model buckets get prompt tiers independently."""
+        pricing = APIPricing(
+            input=4.0,
+            output=18.0,
+            cache_read=0.4,
+            prompt_tiers=[
+                APIPricingTier(
+                    max_input_tokens=200000,
+                    input=2.0,
+                    output=12.0,
+                    cache_read=0.2,
+                )
+            ],
+        )
+        line = (
+            '{"type":"result","status":"success",'
+            '"stats":{"input_tokens":300000,"output_tokens":2000,'
+            '"cached":100000,"input":200000,"total_tokens":303000,'
+            '"models":{'
+            '"gemini-3.1-pro-preview":{"input_tokens":150000,'
+            '"output_tokens":1000,"cached":50000,"input":100000,'
+            '"total_tokens":151500},'
+            '"gemini-3-flash-preview":{"input_tokens":150000,'
+            '"output_tokens":1000,"cached":50000,"input":100000,'
+            '"total_tokens":151500}}}}'
+        )
+
+        cost, tokens, payload = GeminiAgent.parse_line(line, pricing)
+
+        assert cost == pytest.approx(0.456)
+        assert tokens is not None
+        assert payload is not None
+        assert tokens.input == 300000
+        assert tokens.output == 3000
+        assert tokens.reasoning == 1000
+        assert tokens.cache_read == 100000
+
     def test_parse_line_result_counts_thought_tool_and_cache_tokens(
         self, mock_pricing
     ):
-        """Gemini completion usage includes output, thoughts, and tool tokens."""
+        """Legacy Gemini usage can report uncached input plus cached tokens."""
         line = (
             '{"type":"result","status":"success",'
             '"stats":{"input":1000,"output":50,"thoughts":25,'
@@ -503,7 +921,7 @@ class TestGeminiAgentParseLine:
         assert cost is not None
         assert tokens is not None
         assert payload is not None
-        assert tokens.input == 1000
+        assert tokens.input == 1200
         assert tokens.output == 85
         assert tokens.cache_read == 200
         expected_cost = (1000 * 0.15 + 85 * 0.60 + 200 * 0.0375) / 1_000_000

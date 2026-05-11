@@ -19,6 +19,7 @@ import queue
 import threading
 import time
 from collections.abc import Callable
+from collections.abc import Generator
 from collections.abc import Iterator
 from typing import Literal
 
@@ -34,11 +35,7 @@ DEFAULT_WAIT_TIMEOUT = 7200.0  # 2 hours
 
 def ensure_string(data: bytes | str) -> str:
     if isinstance(data, bytes):
-        try:
-            return data.decode("utf-8")
-        except UnicodeDecodeError:
-            logger.warning("Failed to decode bytes as utf-8", data=data)
-            return ""
+        return data.decode("utf-8", errors="replace")
     return data
 
 
@@ -92,7 +89,7 @@ def process_stream(
     timeout: float | None,
     poll_fn: Callable[[], int | None],
     yield_only_after: str | None = None,
-) -> Iterator[RuntimeEvent]:
+) -> Generator[RuntimeEvent, None, RuntimeResult]:
     logger.debug("Starting to consume events with timeout", timeout=timeout)
     start_time = time.monotonic()
     timeout_fn = make_timeout_fn(timeout, start_time)
@@ -160,9 +157,12 @@ def process_stream(
                 break
             continue
 
-        if payload is None:
+        if kind == "finished":
             logger.debug("Received finished event")
-            assert kind == "finished"
+            break
+
+        if payload is None:
+            logger.error("Received empty stream event", kind=kind)
             break
 
         yield from handle_event(kind, payload)
@@ -174,9 +174,12 @@ def process_stream(
         except queue.Empty:
             break
 
-        if payload is None:
+        if kind == "finished":
             logger.debug("Received finished event")
-            assert kind == "finished"
+            break
+
+        if payload is None:
+            logger.error("Received empty stream event", kind=kind)
             break
 
         yield from handle_event(kind, payload)

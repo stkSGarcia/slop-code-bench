@@ -9,5 +9,5 @@ ENV PATH="$HOME/.npm-global/bin:$PATH"
 ENV XDG_CONFIG_HOME="$HOME/.config"
 ENV XDG_DATA_HOME="$HOME/.local/share"
 
-RUN npm install -g @mariozechner/pi-coding-agent@{{ version }} && \
+RUN npm install -g @earendil-works/pi-coding-agent@{{ version }} && \
     mkdir -p "$HOME/.pi/agent"

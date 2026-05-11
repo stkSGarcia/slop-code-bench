@@ -14,6 +14,7 @@ from pathlib import Path
 from jinja2 import Template
 from pydantic import Field
 
+from slop_code.agent_runner.agent import RETRY_PROMPT
 from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.agent_runner.agents.cli_utils import AgentCommandResult
@@ -36,14 +37,20 @@ from slop_code.logging import get_logger
 
 log = get_logger(__name__)
 
+_GEMINI_API_KEY_ENV_VAR = "GEMINI_API_KEY"
+_GOOGLE_API_KEY_ENV_VAR = "GOOGLE_API_KEY"
 _GOOGLE_AUTH_ENV_VARS = (
-    "GEMINI_API_KEY",
+    _GEMINI_API_KEY_ENV_VAR,
     "GOOGLE_APPLICATION_CREDENTIALS",
+    _GOOGLE_API_KEY_ENV_VAR,
+)
+_VERTEX_ENV_VARS = (
     "GOOGLE_CLOUD_PROJECT",
     "GOOGLE_CLOUD_LOCATION",
-    "GOOGLE_GENAI_USE_VERTEXAI",
-    "GOOGLE_API_KEY",
 )
+_VERTEX_USE_ENV_VAR = "GOOGLE_GENAI_USE_VERTEXAI"
+_VERTEX_SETTINGS_JSON = '{"selectedAuthType": "vertex-ai"}\n'
+_DEFAULT_EXTRA_ARGS = ("--skip-trust",)
 
 
 class GeminiConfig(AgentConfigBase):
@@ -63,6 +70,14 @@ class GeminiConfig(AgentConfigBase):
     env: dict[str, str] = Field(
         default_factory=dict,
         description="Environment variable overrides applied to the invocation.",
+    )
+    use_vertex: bool = Field(
+        default=False,
+        description=(
+            "Use Vertex AI for Gemini CLI by setting "
+            "GOOGLE_GENAI_USE_VERTEXAI=true and passing Google Cloud "
+            "project/location variables from the host environment."
+        ),
     )
     timeout: int | None = Field(
         default=None,
@@ -102,6 +117,7 @@ class GeminiAgent(Agent):
         timeout: int | None,
         extra_args: list[str],
         env: dict[str, str],
+        use_vertex: bool = False,  # noqa: FBT001, FBT002
     ) -> None:
         super().__init__(
             agent_name="gemini",
@@ -118,6 +134,7 @@ class GeminiAgent(Agent):
         self.timeout = timeout
         self.extra_args = extra_args
         self.env = env
+        self.use_vertex = use_vertex
 
         self._image = image
         self._session: Session | None = None
@@ -185,6 +202,7 @@ class GeminiAgent(Agent):
             timeout=config.timeout,
             extra_args=config.extra_args,
             env=config.env,
+            use_vertex=config.use_vertex,
         )
 
     @staticmethod
@@ -213,25 +231,63 @@ class GeminiAgent(Agent):
             return None, None, payload
 
         stats = payload.get("stats") or {}
-        input_tokens = stats.get("input_tokens", stats.get("input", 0))
+        tokens = GeminiAgent._tokens_from_stats(stats)
+        cost = GeminiAgent._cost_from_stats(stats, pricing) if pricing else 0.0
+        return (cost, tokens, payload)
+
+    @staticmethod
+    def _tokens_from_stats(stats: dict[str, tp.Any]) -> TokenUsage:
+        """Convert Gemini usage stats to aggregate token usage."""
+        input_tokens = stats.get("input_tokens")
+        uncached_input_tokens = stats.get("input", 0)
         output_tokens = stats.get("output_tokens", stats.get("output", 0))
         thoughts_tokens = stats.get("thoughts_tokens", stats.get("thoughts", 0))
         tool_tokens = stats.get("tool_tokens", stats.get("tool", 0))
+        total_tokens = stats.get("total_tokens", stats.get("total"))
         cache_read_tokens = stats.get(
             "cache_read_tokens",
             stats.get("cached_tokens", stats.get("cached", 0)),
         )
+        if input_tokens is None:
+            input_tokens = uncached_input_tokens + cache_read_tokens
 
-        tokens = TokenUsage(
+        output_tokens = output_tokens + thoughts_tokens + tool_tokens
+        if total_tokens is None:
+            implicit_reasoning_tokens = 0
+        else:
+            implicit_reasoning_tokens = max(
+                total_tokens - input_tokens - output_tokens,
+                0,
+            )
+            output_tokens += implicit_reasoning_tokens
+
+        return TokenUsage(
             input=input_tokens,
-            output=output_tokens + thoughts_tokens + tool_tokens,
+            output=output_tokens,
             cache_read=cache_read_tokens,
             cache_write=0,
-            reasoning=thoughts_tokens,
+            reasoning=thoughts_tokens + implicit_reasoning_tokens,
         )
 
-        cost = pricing.get_cost(tokens) if pricing else 0.0
-        return (cost, tokens, payload)
+    @staticmethod
+    def _cost_from_stats(
+        stats: dict[str, tp.Any],
+        pricing: APIPricing,
+    ) -> float:
+        """Price Gemini stats using per-model buckets when present."""
+        model_stats = stats.get("models")
+        if not isinstance(model_stats, dict):
+            return pricing.get_cost(GeminiAgent._tokens_from_stats(stats))
+
+        model_tokens = [
+            GeminiAgent._tokens_from_stats(candidate)
+            for candidate in model_stats.values()
+            if isinstance(candidate, dict)
+        ]
+        if not model_tokens:
+            return pricing.get_cost(GeminiAgent._tokens_from_stats(stats))
+
+        return sum(pricing.get_cost(tokens) for tokens in model_tokens)
 
     @property
     def session(self) -> Session:
@@ -265,13 +321,23 @@ class GeminiAgent(Agent):
 
         tmp_auth_path = Path(self._tmp_dir.name) / "gemini"
 
-        # Mount auth file as read-only (Gemini doesn't modify this)
+        if self._auth_file is None and not self.use_vertex:
+            return mounts
+
+        # Mount auth/settings from a temporary copy so Gemini can mutate files
+        # without changing the host ~/.gemini directory.
         if self._auth_file is not None:
             shutil.copytree(Path(self._auth_file).parent, tmp_auth_path)
-            mounts[str(tmp_auth_path.absolute())] = {
-                "bind": str(gemini_dir),
-                "mode": "rw",
-            }
+        else:
+            tmp_auth_path.mkdir(parents=True, exist_ok=True)
+
+        if self.use_vertex:
+            (tmp_auth_path / "settings.json").write_text(_VERTEX_SETTINGS_JSON)
+
+        mounts[str(tmp_auth_path.absolute())] = {
+            "bind": str(gemini_dir),
+            "mode": "rw",
+        }
 
         return mounts
 
@@ -314,13 +380,15 @@ class GeminiAgent(Agent):
 
         runtime_result = command_result.result
         if runtime_result is None:
+            message = "Gemini process failed to start"
             log.error(
-                "Gemini process failed to start",
-                error_message=command_result.error_message,
+                "agent.gemini.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+                stdout=command_result.stdout,
+                stderr=command_result.stderr,
             )
-            log.error("STDOUT", stdout=command_result.stdout)
-            log.error("STDERR", stderr=command_result.stderr)
-            raise AgentError("Gemini process failed to start")
+            raise AgentError(message)
 
         if runtime_result.timed_out:
             message = (
@@ -328,7 +396,11 @@ class GeminiAgent(Agent):
                 if self.timeout is not None
                 else "Gemini process timed out."
             )
-            log.error("agent.gemini.timeout", timeout=self.timeout)
+            log.error(
+                "agent.gemini.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
             raise AgentError(message)
 
         if runtime_result.exit_code != 0:
@@ -343,13 +415,78 @@ class GeminiAgent(Agent):
                 )
             log.error(
                 "agent.gemini.exit",
+                error_message=message,
                 exit_code=runtime_result.exit_code,
             )
             raise AgentError(message)
 
-    def _run_invocation(self, task: str) -> AgentCommandResult:
+    def retry(self) -> None:
+        """Continue the most recent Gemini session after an agent error."""
+        self._last_prompt = RETRY_PROMPT
+        self._last_command = None
+
+        self.log.info(
+            "agent.gemini.retry",
+            workspace=str(self.session.working_dir),
+            environment=self.session.spec.type,
+        )
+
+        command_result = self._run_invocation(RETRY_PROMPT, resume=True)
+        self._last_command = command_result
+
+        self._sync_usage(command_result.usage_totals)
+
+        runtime_result = command_result.result
+        if runtime_result is None:
+            message = "Gemini retry process failed to start"
+            log.error(
+                "agent.gemini.retry.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+            )
+            raise AgentError(message)
+
+        if runtime_result.timed_out:
+            message = (
+                f"Gemini retry process timed out after {self.timeout}s."
+                if self.timeout is not None
+                else "Gemini retry process timed out."
+            )
+            log.error(
+                "agent.gemini.retry.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
+            raise AgentError(message)
+
+        if runtime_result.exit_code != 0:
+            message = (
+                "Gemini retry process failed with exit code "
+                f"{runtime_result.exit_code}"
+            )
+            if runtime_result.stderr:
+                message = (
+                    f"{message}\n--- Stderr ---\n"
+                    f"{runtime_result.stderr.strip()}"
+                )
+            log.error(
+                "agent.gemini.retry.exit",
+                error_message=message,
+                exit_code=runtime_result.exit_code,
+            )
+            raise AgentError(message)
+
+    def _run_invocation(
+        self,
+        task: str,
+        *,
+        resume: bool = False,
+    ) -> AgentCommandResult:
         """Execute a Gemini CLI invocation and return results."""
-        command, env_overrides = self._prepare_runtime_execution(task)
+        command, env_overrides = self._prepare_runtime_execution(
+            task,
+            resume=resume,
+        )
 
         if self._session is None:
             raise AgentError("GeminiAgent has not been set up with a session")
@@ -427,6 +564,7 @@ class GeminiAgent(Agent):
                 "cached_input_tokens": total_tokens.cache_read,
                 "reasoning_tokens": total_tokens.reasoning,
                 "total_tokens": total_tokens.input + total_tokens.output,
+                "cost_micros": int(round(total_cost * 1_000_000)),
                 "steps": step_count,
             },
             stdout=stdout,
@@ -440,6 +578,7 @@ class GeminiAgent(Agent):
         output_tokens = int(totals.get("output_tokens") or 0)
         cache_read_tokens = int(totals.get("cached_input_tokens") or 0)
         reasoning_tokens = int(totals.get("reasoning_tokens") or 0)
+        cost_micros = totals.get("cost_micros")
 
         tokens = TokenUsage(
             input=input_tokens,
@@ -448,7 +587,10 @@ class GeminiAgent(Agent):
             reasoning=reasoning_tokens,
         )
 
-        cost = self.pricing.get_cost(tokens) if self.pricing else 0.0
+        if cost_micros is None:
+            cost = self.pricing.get_cost(tokens) if self.pricing else 0.0
+        else:
+            cost = int(cost_micros) / 1_000_000
 
         # Sync token usage directly (steps already tracked incrementally)
         self.usage.cost = cost
@@ -464,6 +606,8 @@ class GeminiAgent(Agent):
     def _prepare_runtime_execution(
         self,
         task: str,
+        *,
+        resume: bool = False,
     ) -> tuple[str, dict[str, str]]:
         """Prepare command and environment overrides for runtime execution."""
         env_overrides = {key: str(value) for key, value in self.env.items()}
@@ -473,19 +617,40 @@ class GeminiAgent(Agent):
             if env_value:
                 env_overrides[env_key] = env_value
 
+        if self.use_vertex:
+            missing_env_vars = [
+                env_key
+                for env_key in _VERTEX_ENV_VARS
+                if not os.environ.get(env_key)
+            ]
+            if missing_env_vars:
+                raise AgentError(
+                    "GeminiAgent use_vertex requires host environment "
+                    f"variables: {', '.join(missing_env_vars)}"
+                )
+            env_overrides[_VERTEX_USE_ENV_VAR] = "true"
+            for env_key in _VERTEX_ENV_VARS:
+                env_overrides[env_key] = os.environ[env_key]
+
         # Handle env_var type credentials
         if (
             self.credential is not None
             and self.credential.credential_type == CredentialType.ENV_VAR
         ):
-            env_overrides[self.credential.destination_key] = (
-                self.credential.value
-            )
+            destination_key = self.credential.destination_key
+            if self.use_vertex and destination_key == _GEMINI_API_KEY_ENV_VAR:
+                destination_key = _GOOGLE_API_KEY_ENV_VAR
+            env_overrides[destination_key] = self.credential.value
 
-        command = self._build_command(task)
+        if self.use_vertex:
+            gemini_api_key = env_overrides.pop(_GEMINI_API_KEY_ENV_VAR, None)
+            if gemini_api_key and _GOOGLE_API_KEY_ENV_VAR not in env_overrides:
+                env_overrides[_GOOGLE_API_KEY_ENV_VAR] = gemini_api_key
+
+        command = self._build_command(task, resume=resume)
         return " ".join(command), env_overrides
 
-    def _build_command(self, prompt: str) -> list[str]:
+    def _build_command(self, prompt: str, *, resume: bool = False) -> list[str]:
         """Build CLI command arguments for Gemini."""
         prompt_arg = shlex.quote(prompt)
         command = [
@@ -495,11 +660,16 @@ class GeminiAgent(Agent):
             "--output-format",
             "stream-json",
         ]
+        if resume:
+            command.extend(["--resume", "latest"])
 
         if self.model:
             model_name = self.model.split("/")[-1]
             command.append(f"--model={model_name}")
 
+        command.extend(
+            arg for arg in _DEFAULT_EXTRA_ARGS if arg not in self.extra_args
+        )
         command.extend(self.extra_args)
         return command
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -72,6 +73,14 @@ class FakeSession:
         return self.runtime
 
 
+def _jwt_with_payload(payload: dict[str, object]) -> str:
+    def encode(value: dict[str, object]) -> str:
+        raw = json.dumps(value, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return f"{encode({'alg': 'none'})}.{encode(payload)}.signature"
+
+
 @pytest.fixture
 def mock_pricing() -> APIPricing:
     return APIPricing(
@@ -111,7 +120,10 @@ class TestPiConfig:
         self, mock_cost_limits: AgentCostLimits
     ) -> None:
         with pytest.raises(Exception):
-            PiConfig(type="pi", cost_limits=mock_cost_limits)
+            PiConfig(  # type: ignore[call-arg]
+                type="pi",
+                cost_limits=mock_cost_limits,
+            )
 
     def test_config_defaults(self, mock_cost_limits: AgentCostLimits) -> None:
         config = PiConfig(
@@ -131,6 +143,7 @@ class TestPiConfig:
         config = build_agent_config(data)
         assert isinstance(config, PiConfig)
         assert config.type == "pi"
+        assert config.version == "0.74.0"
 
     def test_get_docker_file_renders_version(
         self, mock_cost_limits: AgentCostLimits
@@ -143,7 +156,7 @@ class TestPiConfig:
         dockerfile = config.get_docker_file("base-image:latest")
         assert dockerfile is not None
         assert "base-image:latest" in dockerfile
-        assert "@mariozechner/pi-coding-agent@0.45.7" in dockerfile
+        assert "@earendil-works/pi-coding-agent@0.45.7" in dockerfile
 
     def test_get_docker_file_configures_user_npm_path(
         self, mock_cost_limits: AgentCostLimits
@@ -194,6 +207,40 @@ class TestPiAgent:
         assert agent.binary == "pi"
         assert agent.provider == "openai"
         assert agent.model == "gpt-5.2-codex"
+
+    def test_from_config_maps_disabled_thinking_to_headless_off(
+        self,
+        mock_cost_limits: AgentCostLimits,
+        mock_model_def: ModelDefinition,
+    ) -> None:
+        config = PiConfig(
+            type="pi",
+            version="0.45.7",
+            cost_limits=mock_cost_limits,
+        )
+        credential = ProviderCredential(
+            provider="openai",
+            credential_type=CredentialType.ENV_VAR,
+            value="test-api-key",
+            source="OPENAI_API_KEY",
+            destination_key="OPENAI_API_KEY",
+        )
+
+        agent = PiAgent._from_config(
+            config=config,
+            model=mock_model_def,
+            credential=credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            thinking_preset="disabled",
+        )
+
+        assert isinstance(agent, PiAgent)
+        command = agent._build_command("do something")
+        assert "--thinking" in command
+        thinking_index = command.index("--thinking")
+        assert command[thinking_index + 1] == "off"
 
     def test_from_config_requires_image(
         self,
@@ -319,7 +366,7 @@ class TestPiAgent:
         )
         assert thinking is None
 
-    def test_resolve_pi_thinking_disabled_preset_does_not_force_off(
+    def test_resolve_pi_thinking_disabled_preset_sets_off(
         self,
     ) -> None:
         thinking = PiAgent._resolve_pi_thinking(
@@ -327,7 +374,7 @@ class TestPiAgent:
             thinking_preset="disabled",
             thinking_max_tokens=None,
         )
-        assert thinking is None
+        assert thinking == "off"
 
     def test_build_command_rejects_forbidden_extra_args(
         self,
@@ -391,20 +438,27 @@ class TestPiAgent:
         assert env_overrides["OPENAI_API_KEY"] == "super-secret-key"
 
     def test_codex_auth_conversion_supports_codex_cli_format(self) -> None:
+        access_token = _jwt_with_payload(
+            {
+                "exp": 1_800_000_000,
+                "https://api.openai.com/auth": {
+                    "chatgpt_account_id": "account-id"
+                },
+            }
+        )
         codex_auth = {
             "tokens": {
-                "access_token": "access-token",
+                "access_token": access_token,
                 "refresh_token": "refresh-token",
-                "account_id": "account-id",
             }
         }
         converted = PiAgent._convert_codex_auth_payload(codex_auth)
         assert converted == {
             "openai-codex": {
                 "type": "oauth",
-                "access": "access-token",
+                "access": access_token,
                 "refresh": "refresh-token",
-                "expires": 0,
+                "expires": 1_800_000_000_000,
                 "accountId": "account-id",
             }
         }
@@ -461,7 +515,7 @@ class TestPiAgent:
             env={},
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         assert session.last_spawn_env_vars is not None
         assert session.last_spawn_env_vars["HOME"] == HOME_PATH
         assert (
@@ -515,7 +569,7 @@ class TestPiAgent:
         )
 
         with pytest.raises(AgentError, match="Failed to parse Codex auth JSON"):
-            agent.setup(session)
+            agent.setup(cast("Session", session))
 
     def test_parse_line_message_end_usage(
         self, mock_pricing: APIPricing
@@ -539,13 +593,13 @@ class TestPiAgent:
         cost, tokens, payload = PiAgent.parse_line(line, pricing=mock_pricing)
         assert cost == pytest.approx(0.0123)
         assert tokens is not None
-        assert tokens.input == 100
+        assert tokens.input == 120
         assert tokens.output == 10
         assert tokens.cache_read == 20
         assert tokens.cache_write == 5
         assert payload is not None
 
-    def test_parse_line_does_not_reprice_usage_without_reported_cost(
+    def test_parse_line_prices_usage_without_reported_cost(
         self,
         mock_pricing: APIPricing,
     ) -> None:
@@ -567,9 +621,9 @@ class TestPiAgent:
 
         cost, tokens, payload = PiAgent.parse_line(line, pricing=mock_pricing)
 
-        assert cost == 0.0
+        assert cost == pytest.approx(1.38)
         assert tokens is not None
-        assert tokens.input == 1_000_000
+        assert tokens.input == 2_000_000
         assert tokens.output == 1_000_000
         assert tokens.cache_read == 1_000_000
         assert tokens.cache_write == 1_000_000
@@ -584,7 +638,7 @@ class TestPiAgent:
         assert tokens is None
         assert payload is not None
 
-    def test_run_does_not_reprice_pi_usage_when_reported_cost_is_absent(
+    def test_run_prices_pi_usage_when_reported_cost_is_absent(
         self,
         tmp_path: Path,
         mock_cost_limits: AgentCostLimits,
@@ -645,8 +699,8 @@ class TestPiAgent:
         agent.setup(cast("Session", session))
         agent.run("do something")
 
-        assert agent.usage.cost == 0.0
-        assert agent.usage.net_tokens.input == 1_000_000
+        assert agent.usage.cost == pytest.approx(1.38)
+        assert agent.usage.net_tokens.input == 2_000_000
         assert agent.usage.net_tokens.output == 1_000_000
         assert agent.usage.net_tokens.cache_read == 1_000_000
         assert agent.usage.net_tokens.cache_write == 1_000_000
@@ -711,9 +765,97 @@ class TestPiAgent:
             env={},
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         with pytest.raises(AgentError, match="Reasoning is mandatory"):
             agent.run("do something")
+
+    def test_save_artifacts_filters_streaming_deltas(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        mock_pricing: APIPricing,
+    ) -> None:
+        runtime = FakeRuntime()
+        session_event = json.dumps(
+            {"type": "session", "id": "session-1", "cwd": "/workspace"}
+        )
+        message_update = json.dumps(
+            {"type": "message_update", "delta": {"text": "partial"}}
+        )
+        tool_start = json.dumps(
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call-1",
+                "toolName": "bash",
+                "args": {"command": "echo hi"},
+            }
+        )
+        message_end = json.dumps(
+            {
+                "type": "message_end",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Done"}],
+                    "usage": {"input": 1, "output": 1},
+                },
+            }
+        )
+        stdout = (
+            f"{session_event}\n{message_update}\n{tool_start}\n{message_end}\n"
+        )
+        runtime.events = [
+            RuntimeEvent(kind="stdout", text=stdout),
+            RuntimeEvent(
+                kind="finished",
+                result=RuntimeResult(
+                    exit_code=0,
+                    stdout=stdout,
+                    stderr="warning\n",
+                    setup_stdout="",
+                    setup_stderr="",
+                    elapsed=0.1,
+                    timed_out=False,
+                ),
+            ),
+        ]
+        spec = DockerEnvironmentSpec(
+            name="docker-test",
+            docker=DockerConfig(image="pi-test-image"),
+        )
+        session = FakeSession(runtime=runtime, working_dir=tmp_path, spec=spec)
+        agent = PiAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="pi-test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="pi",
+            provider="openai",
+            model="gpt-5.2-codex",
+            timeout=None,
+            thinking=None,
+            extra_args=[],
+            env={},
+        )
+
+        agent.setup(cast("Session", session))
+        agent.run("do something")
+        output_dir = tmp_path / "artifacts"
+        agent.save_artifacts(output_dir)
+
+        saved_payloads = [
+            json.loads(line)
+            for line in (output_dir / "stdout.jsonl").read_text().splitlines()
+        ]
+        assert [payload["type"] for payload in saved_payloads] == [
+            "session",
+            "tool_execution_start",
+            "message_end",
+        ]
+        assert not (output_dir / "messages.jsonl").exists()
+        assert (output_dir / "stderr.log").read_text() == "warning\n"
+        assert (output_dir / "prompt.txt").read_text() == "do something"
 
     def test_run_allows_sigterm_exit_to_preserve_partial_solution(
         self,

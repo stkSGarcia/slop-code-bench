@@ -14,6 +14,7 @@ from jinja2 import Template
 from pydantic import Field
 from pydantic import JsonValue
 
+from slop_code.agent_runner.agent import RETRY_PROMPT
 from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.agent_runner.agents.cli_utils import AgentCommandResult
@@ -723,8 +724,12 @@ class ClaudeCodeAgent(Agent):
         result = self._run(command, env_overrides)
 
         if result is None:
-            self.log.error("Claude Code process failed to start")
-            raise AgentError("Claude Code process failed to start")
+            message = "Claude Code process failed to start"
+            self.log.error(
+                "agent.claude_code.start_failed",
+                error_message=message,
+            )
+            raise AgentError(message)
 
         self.final_result = result
 
@@ -749,18 +754,82 @@ class ClaudeCodeAgent(Agent):
                 if self.timeout is not None
                 else "Claude Code process timed out."
             )
-            log.error("agent.claude_code.timeout", timeout=self.timeout)
+            log.error(
+                "agent.claude_code.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
             raise AgentError(message)
 
         if self._had_error:
+            message = "Claude Code process had an error"
             self.log.error(
-                "Claude Code process had an error", error=self.steps[-1]
+                "agent.claude_code.agent_error",
+                error_message=message,
+                agent_message=self.steps[-1] if self.steps else None,
             )
-            raise AgentError("Claude Code process had an error")
+            raise AgentError(message)
+
+    def retry(self) -> None:
+        self.log.debug(
+            "Starting retry...",
+            thinking=self.thinking,
+            max_thinking_tokens=self.max_thinking_tokens,
+        )
+        self._last_prompt = RETRY_PROMPT
+        self._last_steps = []
+        self._last_command = None
+        self._had_error = False
+        self._got_successful_result = False
+
+        self.log.info(
+            "agent.claude_code.retry",
+            workspace=str(self.workspace),
+            environment=self.spec.type,
+        )
+
+        command, env_overrides = self._prepare_runtime_execution(
+            RETRY_PROMPT,
+            resume=True,
+        )
+        result = self._run(command, env_overrides)
+
+        if result is None:
+            message = "Claude Code retry process failed to start"
+            self.log.error(
+                "agent.claude_code.retry.start_failed",
+                error_message=message,
+            )
+            raise AgentError(message)
+
+        self.final_result = result
+        if result.timed_out:
+            message = (
+                f"Claude Code retry process timed out after {self.timeout}s."
+                if self.timeout is not None
+                else "Claude Code retry process timed out."
+            )
+            log.error(
+                "agent.claude_code.retry.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
+            raise AgentError(message)
+
+        if self._had_error:
+            message = "Claude Code retry process had an error"
+            self.log.error(
+                "agent.claude_code.retry.agent_error",
+                error_message=message,
+                agent_message=self.steps[-1] if self.steps else None,
+            )
+            raise AgentError(message)
 
     def _prepare_runtime_execution(
         self,
         task: str,
+        *,
+        resume: bool = False,
     ) -> tuple[collections.abc.Sequence[str] | str, dict[str, str]]:
         env_overrides = {key: str(value) for key, value in self.env.items()}
         env_overrides.update(self._build_runtime_auth_env())
@@ -792,13 +861,15 @@ class ClaudeCodeAgent(Agent):
         if self.thinking in ("low", "medium", "high", "xhigh"):
             env_overrides["CLAUDE_CODE_EFFORT_LEVEL"] = self.thinking
 
-        cli_args = self._build_cli_args()
+        cli_args = self._build_cli_args(resume=resume)
         cli_args.append(shlex.quote(task))
         command_str = " ".join(cli_args)
         return command_str, env_overrides
 
     def _build_cli_args(
         self,
+        *,
+        resume: bool = False,
     ) -> list[str]:
         args = [
             self.binary,
@@ -806,6 +877,8 @@ class ClaudeCodeAgent(Agent):
             "stream-json",
             "--verbose",
         ]
+        if resume:
+            args.append("--continue")
 
         allowed_tools_value = serialize_tool_list(self.allowed_tools)
         disallowed_tools_value = serialize_tool_list(self.disallowed_tools)

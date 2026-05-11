@@ -221,3 +221,7 @@ dashboard/*.py[cod]
 **/.DS_Store
 .DS_STORE
 .claude/settings.local.json
+
+.pi/*
+tmp/*
+reports/*

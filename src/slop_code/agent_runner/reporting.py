@@ -444,6 +444,30 @@ def save_results(
     return run_info
 
 
+def save_agent_artifacts(
+    output_path: Path,
+    agent: Agent,
+    *,
+    compress_artifacts: bool = False,
+) -> str:
+    """Save agent-native artifacts and return the artifact path name."""
+    output_path.mkdir(parents=True, exist_ok=True)
+    if compress_artifacts:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            agent.save_artifacts(temp_path)
+            tar_path = output_path / common.AGENT_TAR_FILENAME
+            with tarfile.open(tar_path, "w:gz") as tar:
+                for item in temp_path.iterdir():
+                    tar.add(item, arcname=item.name)
+        return common.AGENT_TAR_FILENAME
+
+    agent_dir = output_path / common.AGENT_DIR_NAME
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    agent.save_artifacts(agent_dir)
+    return common.AGENT_DIR_NAME
+
+
 def save_agent_checkpoint_info(
     output_path: Path,
     diff: SnapshotDiff,
@@ -460,20 +484,11 @@ def save_agent_checkpoint_info(
     with (output_path / common.DIFF_FILENAME).open("w") as f:
         f.write(diff.model_dump_json())
 
-    if compress_artifacts:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_path = Path(temp_dir)
-            agent.save_artifacts(temp_path)
-            tar_path = output_path / common.AGENT_TAR_FILENAME
-            with tarfile.open(tar_path, "w:gz") as tar:
-                for item in temp_path.iterdir():
-                    tar.add(item, arcname=item.name)
-        artifacts_name = common.AGENT_TAR_FILENAME
-    else:
-        agent_dir = output_path / common.AGENT_DIR_NAME
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        agent.save_artifacts(agent_dir)
-        artifacts_name = common.AGENT_DIR_NAME
+    artifacts_name = save_agent_artifacts(
+        output_path,
+        agent,
+        compress_artifacts=compress_artifacts,
+    )
 
     # Add path fields to checkpoint result before saving
     result_with_paths = checkpoint_result.model_copy(

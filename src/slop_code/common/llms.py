@@ -65,6 +65,16 @@ class TokenUsage(BaseModel):
         return self.input + self.output
 
 
+class APIPricingTier(BaseModel):
+    """Prompt-size-specific API costs per million tokens."""
+
+    max_input_tokens: int
+    input: float = 0
+    output: float = 0
+    cache_read: float = 0
+    cache_write: float = 0
+
+
 class APIPricing(BaseModel):
     """Costs for API calls. These are per million tokens."""
 
@@ -72,19 +82,30 @@ class APIPricing(BaseModel):
     output: float = 0
     cache_read: float = 0
     cache_write: float = 0
+    prompt_tiers: list[APIPricingTier] = Field(default_factory=list)
 
     def get_cost(self, tokens: TokenUsage) -> float:
+        rates = self._rates_for(tokens)
         uncached_input_tokens = max(tokens.input - tokens.cache_read, 0)
         mil_input = uncached_input_tokens / 1_000_000
         mil_output = tokens.output / 1_000_000
         mil_cache_read = tokens.cache_read / 1_000_000
         mil_cache_write = tokens.cache_write / 1_000_000
         return (
-            self.input * mil_input
-            + self.output * mil_output
-            + self.cache_read * mil_cache_read
-            + self.cache_write * mil_cache_write
+            rates.input * mil_input
+            + rates.output * mil_output
+            + rates.cache_read * mil_cache_read
+            + rates.cache_write * mil_cache_write
         )
+
+    def _rates_for(self, tokens: TokenUsage) -> APIPricing | APIPricingTier:
+        for tier in sorted(
+            self.prompt_tiers,
+            key=lambda candidate: candidate.max_input_tokens,
+        ):
+            if tokens.input <= tier.max_input_tokens:
+                return tier
+        return self
 
 
 class ModelDefinition(BaseModel):

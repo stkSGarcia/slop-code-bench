@@ -325,13 +325,24 @@ class KimiCliAgent(Agent):
 
         runtime_result = command_result.result
         if runtime_result is None:
-            raise AgentError("Kimi process failed to start")
+            message = "Kimi process failed to start"
+            self.log.error(
+                "agent.kimi_cli.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+            )
+            raise AgentError(message)
 
         if runtime_result.timed_out:
             message = (
                 f"Kimi process timed out after {self.timeout}s."
                 if self.timeout is not None
                 else "Kimi process timed out."
+            )
+            self.log.error(
+                "agent.kimi_cli.timeout",
+                error_message=message,
+                timeout=self.timeout,
             )
             raise AgentError(message)
 
@@ -347,10 +358,20 @@ class KimiCliAgent(Agent):
             )
             if runtime_result.stderr:
                 message = f"{message}\n--- Stderr ---\n{runtime_result.stderr.strip()}"
+            self.log.error(
+                "agent.kimi_cli.exit",
+                error_message=message,
+                exit_code=runtime_result.exit_code,
+            )
             raise AgentError(message)
 
         if not saw_final_result:
-            raise AgentError("Kimi process completed without a final response")
+            message = "Kimi process completed without a final response"
+            self.log.error(
+                "agent.kimi_cli.no_final_response",
+                error_message=message,
+            )
+            raise AgentError(message)
 
     def _run_invocation(self, task: str) -> AgentCommandResult:
         command, env_overrides = self._prepare_runtime_execution(task)

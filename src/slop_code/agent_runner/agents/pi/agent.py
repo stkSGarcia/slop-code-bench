@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import functools
 import json
 import os
@@ -117,6 +119,60 @@ _PROTECTED_PI_FLAGS = (
 )
 
 _SIGTERM_EXIT_CODE = 128 + 15
+_OPENAI_AUTH_CLAIM = "https://api.openai.com/auth"
+_PI_ARTIFACT_EXCLUDED_EVENT_TYPES = frozenset({"message_update"})
+
+
+def _decode_jwt_payload(token: str) -> dict[str, tp.Any] | None:
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+
+    payload = parts[1]
+    padded_payload = payload + "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded_payload.encode()).decode()
+        parsed = json.loads(decoded)
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    if isinstance(parsed, dict):
+        return parsed
+    return None
+
+
+def _get_auth_claim(payload: dict[str, tp.Any]) -> dict[str, tp.Any]:
+    claim = payload.get(_OPENAI_AUTH_CLAIM)
+    if isinstance(claim, dict):
+        return claim
+    return {}
+
+
+def _extract_chatgpt_account_id(*tokens: str | None) -> str | None:
+    for token in tokens:
+        if not token:
+            continue
+        payload = _decode_jwt_payload(token)
+        if payload is None:
+            continue
+        claim = _get_auth_claim(payload)
+        account_id = claim.get("chatgpt_account_id")
+        if isinstance(account_id, str) and account_id:
+            return account_id
+    return None
+
+
+def _extract_expiry_ms(*tokens: str | None) -> int:
+    for token in tokens:
+        if not token:
+            continue
+        payload = _decode_jwt_payload(token)
+        if payload is None:
+            continue
+        exp = payload.get("exp")
+        if isinstance(exp, int | float):
+            return int(exp * 1000)
+    return 0
 
 
 class PiConfig(AgentConfigBase):
@@ -148,7 +204,6 @@ class PiAgent(Agent):
     PROMPT_FILENAME = "prompt.txt"
     STDOUT_FILENAME = "stdout.jsonl"
     STDERR_FILENAME = "stderr.log"
-    MESSAGES_FILENAME = "messages.jsonl"
 
     def __init__(
         self,
@@ -195,7 +250,7 @@ class PiAgent(Agent):
 
         self._last_prompt: str = ""
         self._last_command: AgentCommandResult | None = None
-        self._payloads: list[dict[str, tp.Any]] = []
+        self._artifact_payloads: list[dict[str, tp.Any]] = []
 
     @classmethod
     def _from_config(
@@ -282,6 +337,7 @@ class PiAgent(Agent):
             return None
 
         mapped = {
+            "disabled": "off",
             "low": "low",
             "medium": "medium",
             "high": "high",
@@ -314,7 +370,11 @@ class PiAgent(Agent):
 
         access = _pick("access", "access_token")
         refresh = _pick("refresh", "refresh_token")
-        account_id = _pick("accountId", "account_id")
+        id_token = _pick("id_token")
+        account_id = _pick(
+            "accountId",
+            "account_id",
+        ) or _extract_chatgpt_account_id(access, id_token)
 
         if not access or not refresh or not account_id:
             raise AgentError(
@@ -322,12 +382,19 @@ class PiAgent(Agent):
                 "and account id."
             )
 
+        raw_expires = tokens.get("expires")
+        expires = (
+            int(raw_expires)
+            if isinstance(raw_expires, int | float)
+            else _extract_expiry_ms(access, id_token)
+        )
+
         return {
             "openai-codex": {
                 "type": "oauth",
                 "access": access,
                 "refresh": refresh,
-                "expires": 0,
+                "expires": expires,
                 "accountId": account_id,
             }
         }
@@ -337,9 +404,6 @@ class PiAgent(Agent):
         line: str,
         pricing: APIPricing | None = None,
     ) -> tuple[float | None, TokenUsage | None, dict | None]:
-        # Kept for the shared CLI parser signature; Pi cost comes from
-        # usage.cost.total rather than local model-catalog repricing.
-        _ = pricing
         try:
             payload = json.loads(line)
         except json.JSONDecodeError:
@@ -358,20 +422,29 @@ class PiAgent(Agent):
         if not isinstance(usage, dict):
             return None, None, payload
 
+        cache_read = int(usage.get("cacheRead") or 0)
         tokens = TokenUsage(
-            input=int(usage.get("input") or 0),
+            input=int(usage.get("input") or 0) + cache_read,
             output=int(usage.get("output") or 0),
-            cache_read=int(usage.get("cacheRead") or 0),
+            cache_read=cache_read,
             cache_write=int(usage.get("cacheWrite") or 0),
             reasoning=int(usage.get("reasoning") or 0),
         )
 
-        cost = 0.0
+        reported_cost: float | None = None
         usage_cost = usage.get("cost")
         if isinstance(usage_cost, dict):
             total = usage_cost.get("total")
             if isinstance(total, int | float):
-                cost = float(total)
+                reported_cost = float(total)
+
+        cost = (
+            reported_cost
+            if reported_cost is not None
+            else pricing.get_cost(tokens)
+            if pricing is not None
+            else 0.0
+        )
 
         return cost, tokens, payload
 
@@ -396,7 +469,7 @@ class PiAgent(Agent):
     def setup(self, session: Session) -> None:
         self._session = session
         self._environment = session.spec
-        self._payloads = []
+        self._artifact_payloads = []
         self._tmp_dir = tempfile.TemporaryDirectory()
         self._pi_auth_dir = Path(self._tmp_dir.name) / "pi-agent"
         self._pi_auth_dir.mkdir(parents=True, exist_ok=True)
@@ -410,7 +483,7 @@ class PiAgent(Agent):
             self._write_converted_codex_auth(self._pi_auth_dir)
 
         pi_agent_container_path = f"{HOME_PATH}/.pi/agent"
-        mounts: dict[str, dict[str, str]] = {}
+        mounts: dict[str, dict[str, str] | str] = {}
         if isinstance(session.spec, DockerEnvironmentSpec):
             mounts[str(self._pi_auth_dir)] = {
                 "bind": pi_agent_container_path,
@@ -451,7 +524,7 @@ class PiAgent(Agent):
     def run(self, task: str) -> None:
         self._last_prompt = task
         self._last_command = None
-        self._payloads = []
+        self._artifact_payloads = []
 
         log_kwargs: dict[str, tp.Any] = {
             "workspace": str(self.session.working_dir),
@@ -471,13 +544,15 @@ class PiAgent(Agent):
 
         runtime_result = command_result.result
         if runtime_result is None:
+            message = "PI process failed to start"
             self.log.error(
-                "PI process failed to start",
-                error_message=command_result.error_message,
+                "agent.pi.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+                stdout=command_result.stdout,
+                stderr=command_result.stderr,
             )
-            self.log.error("STDOUT", stdout=command_result.stdout)
-            self.log.error("STDERR", stderr=command_result.stderr)
-            raise AgentError("PI process failed to start")
+            raise AgentError(message)
 
         if runtime_result.timed_out:
             message = (
@@ -485,7 +560,11 @@ class PiAgent(Agent):
                 if self.timeout is not None
                 else "PI process timed out."
             )
-            self.log.error("agent.pi.timeout", timeout=self.timeout)
+            self.log.error(
+                "agent.pi.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
             raise AgentError(message)
 
         if runtime_result.exit_code == _SIGTERM_EXIT_CODE:
@@ -499,7 +578,11 @@ class PiAgent(Agent):
             )
             if runtime_result.stderr:
                 message = f"{message}\n--- Stderr ---\n{runtime_result.stderr.strip()}"
-            self.log.error("agent.pi.exit", exit_code=runtime_result.exit_code)
+            self.log.error(
+                "agent.pi.exit",
+                error_message=message,
+                exit_code=runtime_result.exit_code,
+            )
             raise AgentError(message)
 
         if command_result.had_error:
@@ -516,7 +599,10 @@ class PiAgent(Agent):
             raise AgentError("PiAgent has not been set up with a session")
 
         command_text = " ".join(shlex.quote(part) for part in command)
-        parser = functools.partial(self.parse_line, pricing=self.pricing)
+        parser = tp.cast(
+            "tp.Callable[[str], tuple[float | None, TokenUsage | None, dict]]",
+            functools.partial(self.parse_line, pricing=self.pricing),
+        )
 
         total_tokens = TokenUsage()
         step_count = 0
@@ -543,8 +629,9 @@ class PiAgent(Agent):
             if not payload:
                 continue
 
-            self._payloads.append(payload)
             event_type = payload.get("type")
+            if event_type not in _PI_ARTIFACT_EXCLUDED_EVENT_TYPES:
+                self._artifact_payloads.append(payload)
 
             if event_type == "message_end":
                 message = payload.get("message")
@@ -690,7 +777,7 @@ class PiAgent(Agent):
                 float(int(totals.get("reported_cost_micros") or 0)) / 1_000_000
             )
         else:
-            cost = 0.0
+            cost = self.pricing.get_cost(tokens) if self.pricing else 0.0
 
         self.usage.cost += cost
         self.usage.net_tokens += tokens
@@ -706,16 +793,19 @@ class PiAgent(Agent):
     def _write_artifacts(
         cls,
         output_dir: Path,
-        stdout_text: str,
+        artifact_payloads: list[dict[str, tp.Any]],
         stderr_text: str,
     ) -> None:
-        (output_dir / cls.STDOUT_FILENAME).write_text(stdout_text)
+        with (output_dir / cls.STDOUT_FILENAME).open("w") as handle:
+            for payload in artifact_payloads:
+                handle.write(json.dumps(payload, separators=(",", ":")))
+                handle.write("\n")
         (output_dir / cls.STDERR_FILENAME).write_text(stderr_text)
 
     def reset(self) -> None:
         self._last_prompt = ""
         self._last_command = None
-        self._payloads = []
+        self._artifact_payloads = []
 
     def save_artifacts(self, path: Path) -> None:
         path.mkdir(parents=True, exist_ok=True)
@@ -723,18 +813,11 @@ class PiAgent(Agent):
         if self._last_prompt:
             (path / self.PROMPT_FILENAME).write_text(self._last_prompt)
 
-        stdout_text = ""
         stderr_text = ""
         if self._last_command is not None:
-            stdout_text = self._last_command.stdout or ""
             stderr_text = self._last_command.stderr or ""
 
-        self._write_artifacts(path, stdout_text, stderr_text)
-
-        if self._payloads:
-            with (path / self.MESSAGES_FILENAME).open("w") as handle:
-                for payload in self._payloads:
-                    handle.write(json.dumps(payload) + "\n")
+        self._write_artifacts(path, self._artifact_payloads, stderr_text)
 
     def cleanup(self) -> None:
         if self._runtime is not None:

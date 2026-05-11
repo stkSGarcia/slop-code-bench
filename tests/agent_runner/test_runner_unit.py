@@ -11,7 +11,10 @@ from unittest.mock import sentinel
 import pytest
 
 from slop_code.agent_runner import runner
+from slop_code.agent_runner.agent import RETRY_PROMPT
 from slop_code.agent_runner.agent import Agent
+from slop_code.agent_runner.models import AgentCostLimits
+from slop_code.agent_runner.models import AgentError
 from slop_code.agent_runner.models import UsageTracker
 from slop_code.agent_runner.resume import ResumeInfo
 from slop_code.common import INFERENCE_RESULT_FILENAME
@@ -43,6 +46,129 @@ def _usage(cost: float = 0.0, steps: int = 0) -> UsageTracker:
         net_tokens=TokenUsage(),
         current_tokens=TokenUsage(),
     )
+
+
+class RetryProbeAgent(Agent):
+    def __init__(
+        self,
+        *,
+        max_retries: int,
+        errors: list[Exception],
+    ) -> None:
+        super().__init__(
+            agent_name="retry_probe",
+            problem_name="prob",
+            cost_limits=AgentCostLimits(
+                step_limit=0,
+                cost_limit=0.0,
+                net_cost_limit=0.0,
+                max_retries=max_retries,
+            ),
+            pricing=None,
+            verbose=False,
+        )
+        self.errors = errors
+        self.run_tasks: list[str] = []
+        self.retry_count = 0
+
+    @classmethod
+    def _from_config(cls, *args: object, **kwargs: object) -> Agent:
+        raise NotImplementedError
+
+    def setup(self, session: object) -> None:
+        _ = session
+
+    def run(self, task: str) -> None:
+        self.run_tasks.append(task)
+        if self.errors:
+            raise self.errors.pop(0)
+
+    def retry(self) -> None:
+        self.retry_count += 1
+        self.run(RETRY_PROMPT)
+
+    def reset(self) -> None:
+        pass
+
+    def save_artifacts(self, path: Path) -> None:
+        _ = path
+
+    def cleanup(self) -> None:
+        pass
+
+
+class CapturingLogger:
+    def __init__(self) -> None:
+        self.errors: list[tuple[str, dict[str, object]]] = []
+
+    def error(self, event: str, **kwargs: object) -> None:
+        self.errors.append((event, kwargs))
+
+
+def test_run_checkpoint_retries_agent_errors_with_continue_prompt() -> None:
+    agent = RetryProbeAgent(
+        max_retries=1,
+        errors=[AgentError("transient")],
+    )
+
+    result = agent.run_checkpoint("full checkpoint prompt")
+
+    assert result.had_error is False
+    assert agent.retry_count == 1
+    assert agent.run_tasks == ["full checkpoint prompt", RETRY_PROMPT]
+
+
+def test_run_checkpoint_stops_after_retry_budget() -> None:
+    agent = RetryProbeAgent(
+        max_retries=1,
+        errors=[AgentError("first"), AgentError("second")],
+    )
+
+    result = agent.run_checkpoint("full checkpoint prompt")
+
+    assert result.had_error is True
+    assert "second" in (result.error_message or "")
+    assert agent.retry_count == 1
+    assert agent.run_tasks == ["full checkpoint prompt", RETRY_PROMPT]
+
+
+def test_run_checkpoint_does_not_retry_non_agent_errors() -> None:
+    agent = RetryProbeAgent(
+        max_retries=3,
+        errors=[RuntimeError("programming error")],
+    )
+
+    result = agent.run_checkpoint("full checkpoint prompt")
+
+    assert result.had_error is True
+    assert "programming error" in (result.error_message or "")
+    assert agent.retry_count == 0
+    assert agent.run_tasks == ["full checkpoint prompt"]
+
+
+def test_run_checkpoint_logs_exact_agent_error_message() -> None:
+    agent = RetryProbeAgent(
+        max_retries=0,
+        errors=[AgentError("provider said: rate limit exceeded")],
+    )
+    logger = CapturingLogger()
+    agent.log = logger  # type: ignore[assignment]
+
+    agent.run_checkpoint("full checkpoint prompt")
+
+    assert logger.errors
+    _, kwargs = logger.errors[0]
+    assert kwargs["error_message"] == "provider said: rate limit exceeded"
+
+
+def test_agent_cost_limits_default_to_two_retries() -> None:
+    limits = AgentCostLimits(
+        step_limit=0,
+        cost_limit=0.0,
+        net_cost_limit=0.0,
+    )
+
+    assert limits.max_retries == 2
 
 
 @pytest.mark.parametrize(

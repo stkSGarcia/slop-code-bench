@@ -50,6 +50,41 @@ def get_artifacts_path(checkpoint_save_dir: Path, *, compress: bool) -> Path:
     return checkpoint_save_dir / common.AGENT_DIR_NAME
 
 
+def _save_agent_artifacts_after_checkpoint_error(
+    checkpoint_name: str,
+    checkpoint_save_dir: Path,
+    agent: Agent,
+    *,
+    compress_artifacts: bool,
+    original_error: BaseException,
+) -> None:
+    """Best-effort artifact save while preserving the original error."""
+    try:
+        artifacts_name = reporting.save_agent_artifacts(
+            checkpoint_save_dir,
+            agent,
+            compress_artifacts=compress_artifacts,
+        )
+    except BaseException as artifact_error:  # noqa: BLE001
+        logger.error(
+            "Failed to save agent artifacts after checkpoint error",
+            checkpoint=checkpoint_name,
+            checkpoint_dir=str(checkpoint_save_dir),
+            original_error_type=type(original_error).__qualname__,
+            original_error_message=str(original_error),
+            artifact_error_type=type(artifact_error).__qualname__,
+            artifact_error_message=str(artifact_error),
+            exc_info=True,
+        )
+        return
+
+    logger.info(
+        "Saved agent artifacts after checkpoint error",
+        checkpoint=checkpoint_name,
+        artifacts_path=str(checkpoint_save_dir / artifacts_name),
+    )
+
+
 def _load_eval_result(checkpoint_dir: Path) -> CorrectnessResults | None:
     """Load evaluation results from a checkpoint directory, returning None on failure."""
     eval_path = checkpoint_dir / common.EVALUATION_FILENAME
@@ -582,7 +617,7 @@ class AgentRunner:
         self.setup()
         try:
             self.results = self._run_problem()
-        except Exception as e:
+        except BaseException as e:  # noqa: BLE001
             tb_text = traceback.format_exc()
             logger.error(
                 "Error running problem",
@@ -678,100 +713,125 @@ class AgentRunner:
         checkpoint_save_dir: Path,
         is_first_checkpoint: bool,  # noqa: FBT001
     ) -> AgentCheckpointSummary:
-        self._setup_for_checkpoint(checkpoint)
-        self.metrics_tracker.state = AgentStateEnum.RUNNING
         compress = self.run_spec.compress_artifacts
-        snapshot_dir, result, diff = run_checkpoint(
-            agent=self.agent,
-            session=self.session,
-            save_dir=checkpoint_save_dir,
-            checkpoint=checkpoint,
-            problem=self.run_spec.problem,
-            environment=self.run_spec.environment,
-            template=self.run_spec.template,
-            replay_path=self.replay_path,
-            is_first_checkpoint=is_first_checkpoint,
-            compress_artifacts=compress,
-            agent_type=self.run_spec.agent_type,
-            agent_version=self.run_spec.agent_version,
-            model_name=self.run_spec.model_name,
-        )
-        if result is not None:
-            reporting.save_agent_checkpoint_info(
-                checkpoint_save_dir,
-                diff,
-                result,
-                self.agent,
+        try:
+            self._setup_for_checkpoint(checkpoint)
+            self.metrics_tracker.state = AgentStateEnum.RUNNING
+            snapshot_dir, result, diff = run_checkpoint(
+                agent=self.agent,
+                session=self.session,
+                save_dir=checkpoint_save_dir,
+                checkpoint=checkpoint,
+                problem=self.run_spec.problem,
+                environment=self.run_spec.environment,
+                template=self.run_spec.template,
+                replay_path=self.replay_path,
+                is_first_checkpoint=is_first_checkpoint,
                 compress_artifacts=compress,
+                agent_type=self.run_spec.agent_type,
+                agent_version=self.run_spec.agent_version,
+                model_name=self.run_spec.model_name,
             )
-        artifacts_path = get_artifacts_path(
-            checkpoint_save_dir, compress=compress
-        )
-        had_error = result is None or result.had_error
-        rate_limited = False
-        if had_error:
-            if result is None:
+            if result is not None:
+                reporting.save_agent_checkpoint_info(
+                    checkpoint_save_dir,
+                    diff,
+                    result,
+                    self.agent,
+                    compress_artifacts=compress,
+                )
+            else:
                 error = AgentRunnerError(
                     f"Agent produced no result for checkpoint '{checkpoint.name}'"
                 )
-                tb_text = None
-            else:
-                err_msg = (
-                    result.error_message
-                    or f"Agent reported an unspecified error on '{checkpoint.name}'"
+                _save_agent_artifacts_after_checkpoint_error(
+                    checkpoint.name,
+                    checkpoint_save_dir,
+                    self.agent,
+                    compress_artifacts=compress,
+                    original_error=error,
                 )
-                error = AgentRunnerError(err_msg)
-                tb_text = err_msg
-            self.metrics_tracker.record_error(error, traceback_text=tb_text)
-            self.metrics_tracker.state = AgentStateEnum.ERROR
-        elif self.agent.hit_net_rate_limit():
-            logger.warning(
-                "Agent hit rate limit during checkpoint",
+            artifacts_path = get_artifacts_path(
+                checkpoint_save_dir, compress=compress
+            )
+            had_error = result is None or result.had_error
+            rate_limited = False
+            if had_error:
+                if result is None:
+                    error = AgentRunnerError(
+                        f"Agent produced no result for checkpoint '{checkpoint.name}'"
+                    )
+                    tb_text = None
+                else:
+                    err_msg = (
+                        result.error_message
+                        or f"Agent reported an unspecified error on '{checkpoint.name}'"
+                    )
+                    error = AgentRunnerError(err_msg)
+                    tb_text = err_msg
+                self.metrics_tracker.record_error(error, traceback_text=tb_text)
+                self.metrics_tracker.state = AgentStateEnum.ERROR
+            elif self.agent.hit_net_rate_limit():
+                logger.warning(
+                    "Agent hit rate limit during checkpoint",
+                    checkpoint=checkpoint.name,
+                )
+                self.metrics_tracker.state = AgentStateEnum.HIT_RATE_LIMITED
+                rate_limited = True
+            if self.run_spec.skip_evaluation or result is None:
+                # Record checkpoint with no evaluation for progress tracking
+                self.metrics_tracker.record_checkpoint_result(
+                    checkpoint.name, None
+                )
+                return AgentCheckpointSummary.from_results(
+                    checkpoint_name=checkpoint.name,
+                    path=checkpoint_save_dir,
+                    snapshot_dir=snapshot_dir,
+                    artifacts=artifacts_path,
+                    usage=self.agent.usage,
+                    had_error=had_error,
+                    pass_policy=self.run_spec.pass_policy,
+                    evaluation_result=None,
+                )
+
+            # Transition to EVALUATING state before starting evaluation
+            if not (had_error or rate_limited):
+                self.metrics_tracker.state = AgentStateEnum.EVALUATING
+            logger.info(
+                "Starting checkpoint evaluation",
                 checkpoint=checkpoint.name,
             )
-            self.metrics_tracker.state = AgentStateEnum.HIT_RATE_LIMITED
-            rate_limited = True
-        if self.run_spec.skip_evaluation or result is None:
-            # Record checkpoint with no evaluation for progress tracking
-            self.metrics_tracker.record_checkpoint_result(checkpoint.name, None)
+
+            report, _ = evaluate_agent_snapshot(
+                checkpoint=checkpoint,
+                save_dir=checkpoint_save_dir,
+                snapshot_dir=snapshot_dir,
+                problem=self.run_spec.problem,
+                environment=self.run_spec.environment,
+            )
+            # Record checkpoint evaluation result for progress tracking
+            self.metrics_tracker.record_checkpoint_result(
+                checkpoint.name, report
+            )
             return AgentCheckpointSummary.from_results(
                 checkpoint_name=checkpoint.name,
                 path=checkpoint_save_dir,
                 snapshot_dir=snapshot_dir,
                 artifacts=artifacts_path,
                 usage=self.agent.usage,
-                had_error=had_error,
+                had_error=result.had_error,
                 pass_policy=self.run_spec.pass_policy,
-                evaluation_result=None,
+                evaluation_result=report,
             )
-
-        # Transition to EVALUATING state before starting evaluation
-        if not (had_error or rate_limited):
-            self.metrics_tracker.state = AgentStateEnum.EVALUATING
-        logger.info(
-            "Starting checkpoint evaluation",
-            checkpoint=checkpoint.name,
-        )
-
-        report, _ = evaluate_agent_snapshot(
-            checkpoint=checkpoint,
-            save_dir=checkpoint_save_dir,
-            snapshot_dir=snapshot_dir,
-            problem=self.run_spec.problem,
-            environment=self.run_spec.environment,
-        )
-        # Record checkpoint evaluation result for progress tracking
-        self.metrics_tracker.record_checkpoint_result(checkpoint.name, report)
-        return AgentCheckpointSummary.from_results(
-            checkpoint_name=checkpoint.name,
-            path=checkpoint_save_dir,
-            snapshot_dir=snapshot_dir,
-            artifacts=artifacts_path,
-            usage=self.agent.usage,
-            had_error=result.had_error,
-            pass_policy=self.run_spec.pass_policy,
-            evaluation_result=report,
-        )
+        except BaseException as error:  # noqa: BLE001
+            _save_agent_artifacts_after_checkpoint_error(
+                checkpoint.name,
+                checkpoint_save_dir,
+                self.agent,
+                compress_artifacts=compress,
+                original_error=error,
+            )
+            raise
 
     def _load_checkpoint_summary(
         self,

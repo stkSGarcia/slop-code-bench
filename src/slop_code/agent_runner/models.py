@@ -100,6 +100,14 @@ class AgentCostLimits(BaseModel):
     net_cost_limit: Annotated[
         float, Field(description="Maximum net cost per checkpoint")
     ]
+    max_retries: Annotated[
+        int,
+        Field(
+            default=2,
+            ge=0,
+            description="Maximum retry attempts after agent execution errors",
+        ),
+    ] = 2
 
     def is_above_limits(
         self, usage: UsageTracker, prior_cost: float | None

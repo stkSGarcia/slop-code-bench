@@ -393,13 +393,15 @@ disable_color = true
 
         runtime_result = command_result.result
         if runtime_result is None:
+            message = "OpenHands process failed to start"
             log.error(
-                "OpenHands process failed to start",
-                error_message=command_result.error_message,
+                "agent.openhands.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
+                stdout=command_result.stdout,
+                stderr=command_result.stderr,
             )
-            log.error("STDOUT", stdout=command_result.stdout)
-            log.error("STDERR", stderr=command_result.stderr)
-            raise AgentError("OpenHands process failed to start")
+            raise AgentError(message)
 
         if runtime_result.timed_out:
             message = (
@@ -407,7 +409,11 @@ disable_color = true
                 if self.timeout is not None
                 else "OpenHands process timed out."
             )
-            log.error("agent.openhands.timeout", timeout=self.timeout)
+            log.error(
+                "agent.openhands.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
             raise AgentError(message)
 
         # Note: OpenHands may exit with non-zero for various reasons

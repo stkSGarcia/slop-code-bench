@@ -261,11 +261,13 @@ class CursorCliAgent(Agent):
 
         runtime_result = command_result.result
         if runtime_result is None:
+            message = "Cursor process failed to start"
             self.log.error(
-                "Cursor process failed to start",
-                error_message=command_result.error_message,
+                "agent.cursor_cli.start_failed",
+                error_message=message,
+                agent_message=command_result.error_message,
             )
-            raise AgentError("Cursor process failed to start")
+            raise AgentError(message)
 
         if runtime_result.timed_out:
             message = (
@@ -273,7 +275,11 @@ class CursorCliAgent(Agent):
                 if self.timeout is not None
                 else "Cursor process timed out."
             )
-            self.log.error("agent.cursor_cli.timeout", timeout=self.timeout)
+            self.log.error(
+                "agent.cursor_cli.timeout",
+                error_message=message,
+                timeout=self.timeout,
+            )
             raise AgentError(message)
 
         if runtime_result.exit_code != 0:
@@ -282,6 +288,7 @@ class CursorCliAgent(Agent):
                 message = f"{message}\n--- Stderr ---\n{runtime_result.stderr.strip()}"
             self.log.error(
                 "agent.cursor_cli.exit",
+                error_message=message,
                 exit_code=runtime_result.exit_code,
             )
             raise AgentError(message)

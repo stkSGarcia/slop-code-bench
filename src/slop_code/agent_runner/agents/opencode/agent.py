@@ -12,6 +12,7 @@ from typing import Any, Literal
 from pydantic import Field
 from pydantic import JsonValue
 
+from slop_code.agent_runner.agent import RETRY_PROMPT
 from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.agent import AgentConfigBase
 from slop_code.agent_runner.agents.utils import HOME_PATH
@@ -89,6 +90,7 @@ class OpenCodeAgent(Agent):
         self._stderr: str = ""
         self._stdout: str = ""
         self.thinking: ThinkingPreset | None = thinking
+        self._retry_next_run = False
 
     @classmethod
     def _from_config(  # noqa: FBT001
@@ -199,15 +201,18 @@ class OpenCodeAgent(Agent):
             raise AgentError("Trying to get tmp dir before setup")
         return Path(self._tmp_dir.name)
 
-    def _build_opencode_command(self, task: str) -> str:
+    def _build_opencode_command(
+        self, task: str, *, resume: bool = False
+    ) -> str:
         quoted_task = shlex.quote(task)
         quoted_model = shlex.quote(f"{self.provider}/{self.model_id}")
         variant_flag = self._get_variant_flag()
         maybe_variant = f" {variant_flag}" if variant_flag else ""
+        maybe_continue = " --continue" if resume else ""
         return (
             f"opencode --model={quoted_model} run --format=json "
-            f"--thinking --dangerously-skip-permissions{maybe_variant} -- "
-            f"{quoted_task}"
+            f"--thinking --dangerously-skip-permissions{maybe_variant}"
+            f"{maybe_continue} -- {quoted_task}"
         )
 
     def _get_variant_flag(self) -> str | None:
@@ -336,7 +341,9 @@ class OpenCodeAgent(Agent):
         self.log.debug("Opencode agent has been setup")
 
     def run(self, task: str):
-        command = self._build_opencode_command(task)
+        resume = self._retry_next_run
+        self._retry_next_run = False
+        command = self._build_opencode_command(task, resume=resume)
         self.log.debug(
             "Starting OpenCode run",
             command=command[:256],
@@ -404,23 +411,29 @@ class OpenCodeAgent(Agent):
                 saw_step_finish = saw_step_finish or saw_step
 
         if result is None:
+            message = "OpenCode runtime did not provide a finished event"
             self.log.error(
-                "OpenCode runtime did not provide a finished event",
+                "agent.opencode.no_finished_event",
+                error_message=message,
                 stderr=self._stderr,
             )
-            raise AgentError(
-                "OpenCode runtime did not provide a finished event"
-            )
+            raise AgentError(message)
         if not saw_step_finish:
-            self.log.error(
-                "OpenCode runtime did not provide step_finish messages",
-                stderr=self._stderr,
-            )
-            raise AgentError(
+            message = (
                 "OpenCode runtime did not provide any step_finish messages"
             )
+            self.log.error(
+                "agent.opencode.no_step_finish",
+                error_message=message,
+                stderr=self._stderr,
+            )
+            raise AgentError(message)
 
         self.continue_on_run = False
+
+    def retry(self) -> None:
+        self._retry_next_run = True
+        self.run(RETRY_PROMPT)
 
     def _handle_message(
         self,

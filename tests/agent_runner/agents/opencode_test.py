@@ -393,6 +393,17 @@ def test_build_command_matches_harbor_shape(make_agent):
     )
 
 
+def test_build_command_for_retry_continues_last_session(make_agent):
+    agent, _ = make_agent()
+
+    command = agent._build_opencode_command(
+        "continue",
+        resume=True,
+    )
+
+    assert "--continue" in command
+
+
 def test_build_command_includes_variant_for_thinking_level(make_agent):
     agent, _ = make_agent()
     agent.provider = "openai"

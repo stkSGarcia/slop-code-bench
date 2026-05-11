@@ -39,6 +39,8 @@ from slop_code.execution import Session
 from slop_code.execution.runtime import RuntimeEvent
 from slop_code.logging import get_logger
 
+RETRY_PROMPT = "Continue from where you left off."
+
 
 class AgentConfigBase(BaseModel):
     """Base configuration shared by all agent configs.
@@ -345,6 +347,10 @@ class Agent(ABC):
             The list of AgentSteps for the run.
         """
 
+    def retry(self) -> None:
+        """Continue after a failed agent run."""
+        self.run(RETRY_PROMPT)
+
     @abstractmethod
     def reset(self) -> None:
         """Resets the state of the agent and the context.
@@ -398,20 +404,42 @@ class Agent(ABC):
         started = datetime.now()
         had_error = False
         error = None
-        try:
-            self.run(task)
-        except Exception as e:
-            had_error = True
-            error = traceback.format_exc()
-            self.log.error(
-                "Exception raised while running task",
-                exception_type=type(e).__qualname__,
-                exc_info=True,
-            )
+        max_attempts = self.cost_limits.max_retries + 1
+        for attempt in range(max_attempts):
+            try:
+                if attempt == 0:
+                    self.run(task)
+                else:
+                    self.retry()
+            except AgentError as e:
+                had_error = True
+                error = traceback.format_exc()
+                self.log.error(
+                    "Exception raised while running task",
+                    exception_type=type(e).__qualname__,
+                    error_message=str(e),
+                    retry_attempt=attempt,
+                    max_retries=self.cost_limits.max_retries,
+                    exc_info=True,
+                )
+                if attempt < max_attempts - 1:
+                    continue
+            except Exception as e:
+                had_error = True
+                error = traceback.format_exc()
+                self.log.error(
+                    "Non-agent exception raised while running task",
+                    exception_type=type(e).__qualname__,
+                    error_message=str(e),
+                    exc_info=True,
+                )
+            else:
+                had_error = False
+                error = None
+            break
 
-        finally:
-            completed = datetime.now()
-            elapsed = (completed - started).total_seconds()
+        completed = datetime.now()
+        elapsed = (completed - started).total_seconds()
 
         return CheckpointInferenceResult(
             started=started,

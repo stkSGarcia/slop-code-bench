@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from slop_code.agent_runner import runner
 from slop_code.agent_runner.agent import Agent
 from slop_code.agent_runner.agent import AgentConfigBase
@@ -120,6 +122,14 @@ class ExplodingCheckpointAgent(FailingAgent):
         self.usage.current_tokens.input += 10
         self.usage.net_tokens.input += 10
         raise RuntimeError("checkpoint exploded")
+
+
+class InterruptingAgent(FailingAgent):
+    def run(self, task: str) -> None:
+        del task
+        self.usage.steps += 1
+        self.usage.cost += 1.0
+        raise KeyboardInterrupt("ctrl-c")
 
 
 def fake_quality_metrics():
@@ -403,3 +413,78 @@ def test_agent_runner_saves_artifacts_when_checkpoint_raises(
     assert inference_file.exists()
     assert runner_instance.results[0].had_error is True
     assert "checkpoint exploded" in inference_file.read_text(encoding="utf-8")
+
+
+def test_agent_runner_saves_artifacts_when_checkpoint_is_interrupted(
+    tmp_path: Path,
+) -> None:
+    problem = StubProblem(["first"])
+    environment = StubEnvironment()
+    run_spec = _make_run_spec(problem, environment)
+    agent = InterruptingAgent()
+
+    output_path = tmp_path / "outputs"
+    checkpoint_dir = output_path / "first"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    runner_instance = runner.AgentRunner(
+        run_spec=run_spec,
+        agent=agent,
+        output_path=output_path,
+        progress_queue=queue.Queue(),
+    )
+    runner_instance._session = FakeSession(tmp_path / "workspace")
+
+    checkpoint = StubCheckpoint(name="first", spec_text="Spec for first")
+    with pytest.raises(KeyboardInterrupt):
+        runner_instance._run_checkpoint(
+            checkpoint,
+            checkpoint_dir,
+            is_first_checkpoint=True,
+        )
+
+    artifacts_dir = checkpoint_dir / AGENT_DIR_NAME
+    assert artifacts_dir.exists()
+    assert (artifacts_dir / "artifact.txt").read_text(encoding="utf-8") == (
+        "artifact"
+    )
+
+
+def test_agent_runner_saves_artifacts_when_checkpoint_returns_no_result(
+    tmp_path: Path,
+) -> None:
+    problem = StubProblem(["first"])
+    environment = StubEnvironment()
+    run_spec = _make_run_spec(problem, environment)
+    agent = FailingAgent()
+
+    output_path = tmp_path / "outputs"
+    checkpoint_dir = output_path / "first"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    snapshot_dir = checkpoint_dir / "snapshot"
+
+    runner_instance = runner.AgentRunner(
+        run_spec=run_spec,
+        agent=agent,
+        output_path=output_path,
+        progress_queue=queue.Queue(),
+    )
+    runner_instance._session = FakeSession(tmp_path / "workspace")
+
+    checkpoint = StubCheckpoint(name="first", spec_text="Spec for first")
+    with patch(
+        "slop_code.agent_runner.runner.run_checkpoint",
+        return_value=(snapshot_dir, None, FakeDiff()),
+    ):
+        summary = runner_instance._run_checkpoint(
+            checkpoint,
+            checkpoint_dir,
+            is_first_checkpoint=True,
+        )
+
+    assert summary.had_error is True
+    artifacts_dir = checkpoint_dir / AGENT_DIR_NAME
+    assert artifacts_dir.exists()
+    assert (artifacts_dir / "artifact.txt").read_text(encoding="utf-8") == (
+        "artifact"
+    )

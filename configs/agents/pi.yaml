@@ -1,7 +1,7 @@
 type: pi
 binary: pi
 
-version: 0.45.7
+version: 0.74.0
 timeout: 7200 # seconds; adjust to fit expected checkpoint duration
 extra_args: []
 env: {}
@@ -9,4 +9,3 @@ cost_limits:
   cost_limit: 0
   step_limit: 0
   net_cost_limit: 0
-

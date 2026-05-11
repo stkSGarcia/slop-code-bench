@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from slop_code.common.llms import APIPricing
+from slop_code.common.llms import APIPricingTier
 from slop_code.common.llms import ModelCatalog
 from slop_code.common.llms import ModelDefinition
 from slop_code.common.llms import TokenUsage
@@ -36,6 +37,36 @@ class TestAPIPricing:
         expected_cost = (250 * pricing.cache_read) / 1_000_000
 
         assert pricing.get_cost(tokens) == pytest.approx(expected_cost)
+
+    def test_get_cost_uses_prompt_size_tier(self) -> None:
+        """Pricing can switch rates based on total prompt tokens."""
+        pricing = APIPricing(
+            input=4.0,
+            output=18.0,
+            cache_read=0.4,
+            prompt_tiers=[
+                APIPricingTier(
+                    max_input_tokens=200_000,
+                    input=2.0,
+                    output=12.0,
+                    cache_read=0.2,
+                )
+            ],
+        )
+
+        low_tokens = TokenUsage(input=200_000, output=1_000, cache_read=50_000)
+        high_tokens = TokenUsage(
+            input=200_001,
+            output=1_000,
+            cache_read=50_000,
+        )
+
+        assert pricing.get_cost(low_tokens) == pytest.approx(
+            ((150_000 * 2.0) + (1_000 * 12.0) + (50_000 * 0.2)) / 1_000_000
+        )
+        assert pricing.get_cost(high_tokens) == pytest.approx(
+            ((150_001 * 4.0) + (1_000 * 18.0) + (50_000 * 0.4)) / 1_000_000
+        )
 
 
 class TestModelDefinition:
@@ -680,6 +711,25 @@ class TestYAMLLoadedModels:
         # get_model_slug should return appropriate values
         assert model.get_model_slug("openrouter") == "z-ai/glm-4.6"
         assert model.get_model_slug() == "glm-4.6"
+
+    def test_gemini_3_1_pro_loaded(self):
+        """Gemini 3.1 Pro should load with prompt-size pricing tiers."""
+        model = ModelCatalog.get("gemini-3.1-pro")
+        assert model is not None
+        assert model.internal_name == "gemini-3.1-pro-preview"
+        assert model.provider == "google"
+        assert model.pricing.input == 4.0
+        assert model.pricing.output == 18.0
+        assert model.pricing.cache_read == 0.40
+        assert model.pricing.cache_write == 0.0
+        assert len(model.pricing.prompt_tiers) == 1
+        tier = model.pricing.prompt_tiers[0]
+        assert tier.max_input_tokens == 200_000
+        assert tier.input == 2.0
+        assert tier.output == 12.0
+        assert tier.cache_read == 0.20
+        assert tier.cache_write == 0.0
+        assert ModelCatalog.get("gemini-3.1") is model
 
     @pytest.mark.parametrize(
         ("model_name", "openrouter_slug"),
