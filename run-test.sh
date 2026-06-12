@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
-REPO=../exp-meshctl
+REPO=../exps/exp-meshctl
 PROBLEM=meshctl
 ENV_CONFIG=configs/environments/docker-python3.12-uv.yaml
 SAVE_DIR=eval-results
-MAP_FILE=../meshctl-ckps.json
+MAP_FILE=../exps/exp-meshctl/ckp-mapping.json
 
 mkdir -p "$SAVE_DIR/$PROBLEM"
 
@@ -14,7 +14,7 @@ cat > "$SAVE_DIR/config.yaml" <<EOF
 problems:
   - $PROBLEM
 model:
-  name: claude-sonnet-4-6
+  name: codex-gpt5.5
 thinking: high
 prompt_path: external
 agent:
@@ -26,16 +26,18 @@ for checkpoint_num in $(jq -r 'keys[]' "$MAP_FILE" | sort -n); do
   commit_id=$(jq -r --arg k "$checkpoint_num" '.[$k]' "$MAP_FILE")
   snapshot_dir="$SAVE_DIR/$PROBLEM/checkpoint_${checkpoint_num}/snapshot"
 
-  echo "=== Checkout checkpoint $checkpoint_num ($commit_id) ==="
+  echo "=== Export checkpoint $checkpoint_num ($commit_id) ==="
+  rm -rf "$snapshot_dir"
   mkdir -p "$snapshot_dir"
 
-  worktree_dir=$(mktemp -d)
-  git -C "$REPO" worktree add --detach "$worktree_dir" "$commit_id"
-  cp -r "$worktree_dir/." "$snapshot_dir/"
-  git -C "$REPO" worktree remove --force "$worktree_dir"
+  git -C "$REPO" archive "$commit_id" | tar -x -C "$snapshot_dir"
 done
 
-# Step 2: full evaluation — tests + quality + verbosity/erosion + delta
+# Step 2: generate diff.json files used for churn metrics
+echo "=== Regenerating diff.json ==="
+uv run slop-code utils repopulate-diffs "$SAVE_DIR" -p "$PROBLEM"
+
+# Step 3: full evaluation — tests + quality + verbosity/erosion + delta
 echo "=== Running full evaluation ==="
 uv run slop-code eval "$SAVE_DIR" \
   --problem "$PROBLEM" \
@@ -43,4 +45,5 @@ uv run slop-code eval "$SAVE_DIR" \
 
 echo "Done."
 echo "  Per-checkpoint: $SAVE_DIR/$PROBLEM/checkpoint_N/evaluation.json"
+echo "  Per-checkpoint: $SAVE_DIR/$PROBLEM/checkpoint_N/diff.json"
 echo "  Aggregated:     $SAVE_DIR/checkpoint_results.jsonl"
