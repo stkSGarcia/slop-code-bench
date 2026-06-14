@@ -174,6 +174,14 @@ def evaluate_agent_run(
         "--overwrite",
         help="Re-evaluate problems even if they already have evaluation results",
     ),
+    start_checkpoint: str | None = typer.Option(
+        None,
+        "--start-checkpoint",
+        help=(
+            "Run full evaluation starting at this checkpoint. Earlier "
+            "checkpoints only generate static metrics."
+        ),
+    ),
 ) -> None:
     """Evaluate a directory of attempts against a problem specification."""
 
@@ -216,6 +224,7 @@ def evaluate_agent_run(
         env_config=str(env_path),
         pass_policy=pass_policy.value,
         overwrite=overwrite,
+        start_checkpoint=start_checkpoint,
     )
 
     common.ensure_docker_ready(environment)
@@ -286,6 +295,7 @@ def evaluate_agent_run(
         live_progress=live_progress,
         console=console,
         num_workers=num_workers,
+        start_checkpoint=start_checkpoint,
     )
     logger.info(
         "Evaluation complete",
@@ -296,6 +306,7 @@ def evaluate_agent_run(
     report_file = agent_run_dir / CHECKPOINT_RESULTS_FILENAME
     report_errors: list[tuple[str, str]] = []
     all_reports: list[dict] = []
+    evaluated_problem_names = {problem.name for problem, _ in problems_to_eval}
     for p_dir in agent_run_dir.iterdir():
         if not p_dir.is_dir():
             continue
@@ -325,8 +336,11 @@ def evaluate_agent_run(
             report_errors.append((problem_name, str(e)))
             continue
 
+        report_start_checkpoint = (
+            start_checkpoint if problem_name in evaluated_problem_names else None
+        )
         reports, errors = evaluation_entry.create_problem_reports(
-            p_dir, problem
+            p_dir, problem, start_checkpoint=report_start_checkpoint
         )
         all_reports.extend(reports)
         for checkpoint_name, error_msg in errors:
@@ -334,7 +348,11 @@ def evaluate_agent_run(
                 (f"{problem_name}/{checkpoint_name}", error_msg)
             )
 
-    update_results_jsonl(report_file, all_reports)
+    update_results_jsonl(
+        report_file,
+        all_reports,
+        replace_problems=evaluated_problem_names,
+    )
 
     typer.echo(f"Reports written to {report_file}")
 

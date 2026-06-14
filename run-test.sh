@@ -6,6 +6,11 @@ PROBLEM=meshctl
 ENV_CONFIG=configs/environments/docker-python3.12-uv.yaml
 SAVE_DIR=eval-results
 MAP_FILE=../exps/exp-meshctl/ckp-mapping.json
+UV_RUN=(uv run --python 3.12)
+BASE_DIFF_CHECKPOINT=1
+BASE_DIFF_FILENAME="diff_from_ckpt_${BASE_DIFF_CHECKPOINT}.json"
+BASE_DIFF_SUMMARY_FILE="$SAVE_DIR/diff_from_ckpt_results.jsonl"
+EVAL_START_CHECKPOINT=1
 
 mkdir -p "$SAVE_DIR/$PROBLEM"
 
@@ -35,15 +40,29 @@ done
 
 # Step 2: generate diff.json files used for churn metrics
 echo "=== Regenerating diff.json ==="
-uv run slop-code utils repopulate-diffs "$SAVE_DIR" -p "$PROBLEM"
+"${UV_RUN[@]}" slop-code utils repopulate-diffs "$SAVE_DIR" -p "$PROBLEM"
+
+# Also generate diffs from checkpoint 1 for cross-checkpoint comparison.
+echo "=== Regenerating $BASE_DIFF_FILENAME ==="
+"${UV_RUN[@]}" python generate-base-diffs.py "$SAVE_DIR" "$PROBLEM" \
+  "$BASE_DIFF_CHECKPOINT" "$BASE_DIFF_FILENAME"
 
 # Step 3: full evaluation — tests + quality + verbosity/erosion + delta
 echo "=== Running full evaluation ==="
-uv run slop-code eval "$SAVE_DIR" \
+"${UV_RUN[@]}" slop-code eval "$SAVE_DIR" \
   --problem "$PROBLEM" \
+  --start-checkpoint "$EVAL_START_CHECKPOINT" \
   -e "$ENV_CONFIG"
+
+# Step 4: summarize checkpoint-to-base diffs into a run-level JSONL file
+echo "=== Summarizing $BASE_DIFF_FILENAME ==="
+"${UV_RUN[@]}" python summarize-diff-from-ckpt.py "$SAVE_DIR" "$PROBLEM" \
+  "$BASE_DIFF_CHECKPOINT" "$BASE_DIFF_FILENAME" "$BASE_DIFF_SUMMARY_FILE"
 
 echo "Done."
 echo "  Per-checkpoint: $SAVE_DIR/$PROBLEM/checkpoint_N/evaluation.json"
 echo "  Per-checkpoint: $SAVE_DIR/$PROBLEM/checkpoint_N/diff.json"
+echo "  Per-checkpoint: $SAVE_DIR/$PROBLEM/checkpoint_N/$BASE_DIFF_FILENAME"
 echo "  Aggregated:     $SAVE_DIR/checkpoint_results.jsonl"
+echo "  Base diffs:     $BASE_DIFF_SUMMARY_FILE"
+echo "  Eval start:     checkpoint_$EVAL_START_CHECKPOINT"
