@@ -19,6 +19,9 @@ from slop_code.entrypoints import evaluation as evaluation_entry
 from slop_code.entrypoints.commands import common
 from slop_code.entrypoints.config import loader as config_loader
 from slop_code.entrypoints.evaluation.metrics import update_results_jsonl
+from slop_code.entrypoints.evaluation.utils import (
+    resolve_start_checkpoint_order,
+)
 from slop_code.entrypoints.utils import count_expected_checkpoints
 from slop_code.entrypoints.utils import display_and_save_summary
 from slop_code.evaluation import EVALUATION_SCHEMA_VERSION
@@ -43,6 +46,48 @@ REQUIRED_EVAL_FIELDS = [
 ]
 
 REQUIRED_EVAL_DIR_FILES = ["stdout.txt", "stderr.txt", "report.json"]
+
+
+def _count_expected_checkpoints_from_start(
+    config: dict,
+    problems_dir: Path,
+    start_checkpoint: str | None,
+) -> int:
+    if start_checkpoint is None:
+        return count_expected_checkpoints(config, problems_dir)
+
+    problem_names = config.get("problems") or []
+    total = 0
+    for name in problem_names:
+        problem_path = problems_dir / name
+        try:
+            problem_config = ProblemConfig.from_yaml(problem_path)
+            start_order = resolve_start_checkpoint_order(
+                problem_config, start_checkpoint
+            )
+        except (
+            FileNotFoundError,
+            OSError,
+            TypeError,
+            ValueError,
+            KeyError,
+            yaml.YAMLError,
+        ) as e:
+            logger.warning(
+                "Could not resolve problem for expected-checkpoint count",
+                problem=name,
+                problem_path=str(problem_path),
+                error=str(e),
+            )
+            continue
+
+        total += sum(
+            1
+            for checkpoint in problem_config.checkpoints.values()
+            if checkpoint.order >= start_order
+        )
+
+    return total
 
 
 def _is_evaluation_schema_current(checkpoint_dir: Path) -> bool:
@@ -387,7 +432,9 @@ def evaluate_agent_run(
     with (agent_run_dir / CONFIG_FILENAME).open("r") as f:
         config = yaml.safe_load(f)
     # Display and save summary statistics
-    expected_checkpoints = count_expected_checkpoints(config, problem_root)
+    expected_checkpoints = _count_expected_checkpoints_from_start(
+        config, problem_root, start_checkpoint
+    )
     display_and_save_summary(
         report_file, agent_run_dir, config, console, expected_checkpoints
     )
