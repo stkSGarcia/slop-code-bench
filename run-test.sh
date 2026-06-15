@@ -1,16 +1,19 @@
 #!/usr/bin/env bash
 set -e
 
-REPO=../exps/exp-meshctl
+# Customize these variables as needed for your experiment setup
 PROBLEM=meshctl
-ENV_CONFIG=configs/environments/docker-python3.12-uv.yaml
-SAVE_DIR=eval-results
+REPO=../exps/exp-meshctl
 MAP_FILE=../exps/exp-meshctl/ckp-mapping.json
-UV_RUN=(uv run --python 3.12)
+SAVE_DIR=eval-results
+EVAL_START_CHECKPOINT=5
 BASE_DIFF_CHECKPOINT=1
+DELETE_SNAPSHOT=1
+
 BASE_DIFF_FILENAME="diff_from_ckpt_${BASE_DIFF_CHECKPOINT}.json"
 BASE_DIFF_SUMMARY_FILE="$SAVE_DIR/diff_from_ckpt_results.jsonl"
-EVAL_START_CHECKPOINT=1
+UV_RUN=(uv run --python 3.12)
+ENV_CONFIG=configs/environments/docker-python3.12-uv.yaml
 
 mkdir -p "$SAVE_DIR/$PROBLEM"
 
@@ -58,6 +61,20 @@ echo "=== Running full evaluation ==="
 echo "=== Summarizing $BASE_DIFF_FILENAME ==="
 "${UV_RUN[@]}" python summarize-diff-from-ckpt.py "$SAVE_DIR" "$PROBLEM" \
   "$BASE_DIFF_CHECKPOINT" "$BASE_DIFF_FILENAME" "$BASE_DIFF_SUMMARY_FILE"
+
+if [[ "$DELETE_SNAPSHOT" -eq 1 ]]; then
+  echo "=== Deleting checkpoint snapshot directories ==="
+  shopt -s nullglob
+  snapshot_dirs=("$SAVE_DIR/$PROBLEM"/checkpoint_*/snapshot)
+  shopt -u nullglob
+
+  for snapshot_dir in "${snapshot_dirs[@]}"; do
+    if [[ -d "$snapshot_dir" ]]; then
+      echo "Deleting $snapshot_dir"
+      rm -rf "$snapshot_dir"
+    fi
+  done
+fi
 
 echo "Done."
 echo "  Per-checkpoint: $SAVE_DIR/$PROBLEM/checkpoint_N/evaluation.json"
