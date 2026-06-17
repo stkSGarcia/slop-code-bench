@@ -164,6 +164,8 @@ def summarize_diffs(
     base_checkpoint: int,
     diff_filename: str,
     output_jsonl: Path,
+    *,
+    append: bool = False,
 ) -> None:
     problem_dir = run_dir / problem
     if not problem_dir.exists():
@@ -174,6 +176,9 @@ def summarize_diffs(
 
     rows = []
     for checkpoint_num, checkpoint_dir in discover_checkpoint_dirs(problem_dir):
+        if checkpoint_num <= base_checkpoint:
+            continue
+
         row = summarize_diff(
             problem=problem,
             checkpoint_num=checkpoint_num,
@@ -186,11 +191,13 @@ def summarize_diffs(
             rows.append(row)
 
     output_jsonl.parent.mkdir(parents=True, exist_ok=True)
-    with output_jsonl.open("w") as f:
+    mode = "a" if append else "w"
+    with output_jsonl.open(mode) as f:
         for row in rows:
             f.write(json.dumps(row, sort_keys=True) + "\n")
 
-    print(f"Wrote {output_jsonl} ({len(rows)} rows)")
+    action = "Appended to" if append else "Wrote"
+    print(f"{action} {output_jsonl} ({len(rows)} rows)")
 
 
 def parse_args() -> argparse.Namespace:
@@ -202,6 +209,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("base_checkpoint", type=int)
     parser.add_argument("diff_filename")
     parser.add_argument("output_jsonl", type=Path)
+    parser.add_argument(
+        "--append",
+        action="store_true",
+        help="Append rows to output_jsonl instead of overwriting it.",
+    )
     return parser.parse_args()
 
 
@@ -213,6 +225,7 @@ def main() -> None:
         base_checkpoint=args.base_checkpoint,
         diff_filename=args.diff_filename,
         output_jsonl=args.output_jsonl,
+        append=args.append,
     )
 
 

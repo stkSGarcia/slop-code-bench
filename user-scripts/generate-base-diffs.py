@@ -6,12 +6,22 @@ from pathlib import Path
 from slop_code.execution.snapshot import create_diff_from_directories
 
 
-def checkpoint_sort_key(path: Path) -> tuple[int, int | str]:
+def checkpoint_number(path: Path) -> int | None:
     prefix = "checkpoint_"
-    if path.name.startswith(prefix):
-        suffix = path.name.removeprefix(prefix)
-        if suffix.isdigit():
-            return (0, int(suffix))
+    if not path.name.startswith(prefix):
+        return None
+
+    suffix = path.name.removeprefix(prefix)
+    if not suffix.isdigit():
+        return None
+
+    return int(suffix)
+
+
+def checkpoint_sort_key(path: Path) -> tuple[int, int | str]:
+    number = checkpoint_number(path)
+    if number is not None:
+        return (0, number)
     return (1, path.name)
 
 
@@ -36,6 +46,10 @@ def generate_base_diffs(
     )
 
     for checkpoint_dir in checkpoint_dirs:
+        checkpoint_num = checkpoint_number(checkpoint_dir)
+        if checkpoint_num is None or checkpoint_num <= base_checkpoint:
+            continue
+
         snapshot_dir = checkpoint_dir / "snapshot"
         if not snapshot_dir.exists():
             continue
