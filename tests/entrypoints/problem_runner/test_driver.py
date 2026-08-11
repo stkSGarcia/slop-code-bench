@@ -5,6 +5,7 @@ import queue
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 
 import pytest
@@ -319,6 +320,60 @@ def test_run_problems_submits_duplicate_attempts(monkeypatch) -> None:
         ProblemAttempt("cfgpipe", "cfgpipe__attempt_2"),
     ]
     assert [result.problem_name for result in results] == [
+        "cfgpipe__attempt_1",
+        "cfgpipe__attempt_2",
+    ]
+
+
+def test_run_problems_tracks_attempt_names_as_strings(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    fake_manager = SimpleNamespace(Queue=queue.Queue)
+    problem_config = SimpleNamespace(
+        iterate_checkpoint_items=lambda: [("checkpoint_1", object())]
+    )
+    config = cast(
+        "RunTaskConfig",
+        SimpleNamespace(
+            problem_base_path=tmp_path,
+            one_shot=object(),
+            run_dir=tmp_path / "run",
+            live_progress=False,
+        ),
+    )
+    tracked_names: list[str] = []
+
+    monkeypatch.setattr(driver.mp, "Manager", lambda: fake_manager)
+    monkeypatch.setattr(
+        driver.evaluation.ProblemConfig,
+        "from_yaml",
+        lambda _path: problem_config,
+    )
+    monkeypatch.setattr(
+        driver,
+        "apply_one_shot_mode",
+        lambda *, problem_config, one_shot: problem_config,
+    )
+
+    def capture_problem_states(
+        problem_attempts,
+        config,
+        num_workers,
+        progress_queue,
+        progress_display,
+        problem_states,
+    ) -> list[TaskResult]:
+        tracked_names.extend(name for name, _ in problem_states.problems())
+        for attempt in problem_attempts:
+            problem_states[attempt.attempt_name]
+        return []
+
+    monkeypatch.setattr(driver, "_run_problems", capture_problem_states)
+
+    driver.run_problems(["cfgpipe", "cfgpipe"], config)
+
+    assert tracked_names == [
         "cfgpipe__attempt_1",
         "cfgpipe__attempt_2",
     ]

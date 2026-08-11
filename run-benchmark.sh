@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workflow=artnet # openspec or artnet
+workflow=openspec # openspec or artnet
 case "$workflow" in
   openspec)
     agent_config=configs/agents/codex-openspec.yaml
@@ -28,19 +28,19 @@ problems=(
   forge
 
   # Medium
-  # circuit_eval
-  # database_migration
-  # file_query_tool
-  # mvvault
-  # trajectory_api
+  circuit_eval
+  database_migration
+  file_query_tool
+  mvvault
+  trajectory_api
 
   # Hard
-  # eve_industry
-  # meshctl
-  # mocked_http
-  # recli
-  # test_translator
-  # rejector
+  eve_industry
+  meshctl
+  mocked_http
+  recli
+  test_translator
+  rejector
 )
 
 problem_args=()
@@ -53,7 +53,7 @@ exec uv run slop-code run \
   --environment "$environment_config" \
   --prompt checkpoint-only \
   --model codex_auth/gpt-5.5 \
-  --num-workers 3 \
+  --num-workers 4 \
   "${problem_args[@]}" \
   thinking=high \
   pass_policy=any-case \
