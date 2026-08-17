@@ -449,7 +449,8 @@ class CodexAgent(Agent):
         self._workflow_initialized = True
 
     def _active_change_id(self) -> str:
-        changes_dir = self.session.working_dir / "openspec" / "changes"
+        workflow = tp.cast("WorkflowConfig", self.workflow)
+        changes_dir = self.session.working_dir / workflow.changes_dir
         candidates = sorted(
             path.name
             for path in changes_dir.iterdir()
@@ -458,8 +459,8 @@ class CodexAgent(Agent):
         if len(candidates) != 1:
             found = ", ".join(candidates) or "none"
             raise AgentError(
-                "Expected exactly one active OpenSpec change for a workflow "
-                f"node requiring change_id; found: {found}"
+                "Expected exactly one active change for workflow "
+                f"'{workflow.type}' in {workflow.changes_dir}; found: {found}"
             )
         return candidates[0]
 

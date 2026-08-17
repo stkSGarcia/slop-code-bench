@@ -45,6 +45,17 @@ def test_workflow_setup_is_fully_declarative() -> None:
     assert workflow.init_commands == (("openspec", "init", ".", "--force"),)
     assert workflow.env == {"CI": "true"}
     assert workflow.env_from_host == ()
+    assert workflow.changes_dir == Path("openspec/changes")
+
+
+def test_workflow_can_configure_its_changes_directory() -> None:
+    workflow = _workflow(
+        changes_dir="synergyspec-selfevolving/changes",
+    )
+
+    assert workflow.changes_dir == Path(
+        "synergyspec-selfevolving/changes"
+    )
 
 
 def test_host_environment_variable_names_are_declarative() -> None:
@@ -270,6 +281,14 @@ def test_required_skill_paths_follow_configuration() -> None:
         (
             {"skills": [{"name": "Bad Name"}]},
             "lowercase kebab-case",
+        ),
+        (
+            {"changes_dir": "/workspace/changes"},
+            "changes_dir must be a non-empty relative path",
+        ),
+        (
+            {"changes_dir": "../changes"},
+            "changes_dir must be a non-empty relative path",
         ),
         (
             {

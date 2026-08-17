@@ -1,0 +1,50 @@
+type: codex
+binary: codex
+
+version: "0.146.1"
+workflow:
+  type: synergyspec
+  version: "3.0.2"
+  changes_dir: synergyspec-selfevolving/changes
+  install_commands:
+    - [npm, install, -g, "synergyspec-selfevolving@3.0.2"]
+  init_commands:
+    - [synergyspec-selfevolving, init, ., --tools, codex]
+  env:
+    CI: "true"
+    SYNERGYSPEC_SELFEVOLVING_TELEMETRY: "0"
+    NO_COLOR: "1"
+  skills:
+    - name: synergyspec-selfevolving-propose
+      arguments:
+        - >-
+          Please make the changes for the following task. Do not implement code for this stage.
+        - "{task}"
+    - name: synergyspec-selfevolving-apply-change
+      arguments:
+        - "{change_id}"
+    - name: synergyspec-selfevolving-sync-specs
+      arguments:
+        - "{change_id}"
+    - name: synergyspec-selfevolving-archive-change
+      arguments:
+        - "{change_id}"
+        - >-
+          Benchmark policy override: this workflow intentionally consists only
+          of propose, apply, sync, and archive. The gen-tests, run-tests,
+          verify, and learn stages are deliberately skipped. Override the
+          archive skill's evidence gates: do not require spec-tests.md,
+          test-report.md, verification-report.md, verification.md,
+          learn-report.md, workspace identity evidence, or successful
+          evolution. Ignore isArchiveReady when it is false only because those
+          intentionally skipped stages are absent. Do not invoke a skipped
+          stage and do not create placeholder evidence. If every remaining
+          archive check passes, archive the change.
+timeout: 7200 # seconds per workflow node
+extra_args: []
+env: {}
+cost_limits:
+  cost_limit: 0
+  step_limit: 0
+  net_cost_limit: 0
+  max_retries: 0

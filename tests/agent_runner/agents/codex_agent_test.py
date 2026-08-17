@@ -212,6 +212,38 @@ class TestCodexConfig:
         assert config.version == "0.74.0"
         assert config.workflow is None
 
+    def test_repository_synergyspec_config_loads(self):
+        config_path = (
+            Path(__file__).parents[3]
+            / "configs"
+            / "agents"
+            / "codex-synergyspec.yaml"
+        )
+        _, data = load_agent_config(config_path)
+
+        config = build_agent_config(data)
+
+        assert isinstance(config, CodexConfig)
+        assert config.workflow is not None
+        assert config.workflow.changes_dir == Path(
+            "synergyspec-selfevolving/changes"
+        )
+        assert [node.name for node in config.workflow.skills] == [
+            "synergyspec-selfevolving-propose",
+            "synergyspec-selfevolving-apply-change",
+            "synergyspec-selfevolving-sync-specs",
+            "synergyspec-selfevolving-archive-change",
+        ]
+        archive = config.workflow.skills[-1]
+        assert archive.arguments[0] == "{change_id}"
+        assert "consists only of propose, apply, sync, and archive" in (
+            archive.arguments[1]
+        )
+        assert "Override the archive skill's evidence gates" in (
+            archive.arguments[1]
+        )
+        assert "delta" not in archive.arguments[1].lower()
+
     def test_repository_artnet_config_has_four_neo4j_resources(self):
         repository = Path(__file__).parents[3]
         config_path = repository / "configs" / "agents" / "codex-artnet.yaml"

@@ -266,6 +266,20 @@ def test_workflow_command_disables_interactive_questions(tmp_path: Path) -> None
     ]
 
 
+def test_active_change_uses_workflow_changes_directory(
+    tmp_path: Path,
+) -> None:
+    workflow = _workflow(
+        type="synergyspec",
+        changes_dir="synergyspec-selfevolving/changes",
+    )
+    agent, _ = _agent(tmp_path, FakeRuntime([]), workflow)
+    change = tmp_path / workflow.changes_dir / "test-change"
+    change.mkdir(parents=True)
+
+    assert agent._active_change_id() == "test-change"
+
+
 def test_init_failure_prevents_codex_exec(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

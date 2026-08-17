@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-workflow=openspec # openspec or artnet
+workflow=openspec # openspec, artnet, or synergyspec
 case "$workflow" in
   openspec)
     agent_config=configs/agents/codex-openspec.yaml
@@ -13,8 +13,13 @@ case "$workflow" in
     environment_config=docker-python3.12-uv-artnet
     save_dir=outputs/codex_artnet
     ;;
+  synergyspec)
+    agent_config=configs/agents/codex-synergyspec.yaml
+    environment_config=docker-python3.12-uv
+    save_dir=outputs/codex_synergyspec
+    ;;
   *)
-    echo "workflow must be openspec or artnet" >&2
+    echo "workflow must be openspec, artnet, or synergyspec" >&2
     exit 2
     ;;
 esac

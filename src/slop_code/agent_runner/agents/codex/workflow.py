@@ -198,6 +198,7 @@ class WorkflowConfig(BaseModel):
     init_commands: tuple[tuple[str, ...], ...] = ()
     env: dict[str, str] = Field(default_factory=dict)
     env_from_host: tuple[str, ...] = ()
+    changes_dir: Path = Path("openspec/changes")
     resource_pool: WorkflowResourcePool | None = None
     resource_assignments: dict[str, str] = Field(
         default_factory=dict,
@@ -221,6 +222,16 @@ class WorkflowConfig(BaseModel):
     def _validate_version(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("workflow version must not be empty")
+        return value
+
+    @field_validator("changes_dir")
+    @classmethod
+    def _validate_changes_dir(cls, value: Path) -> Path:
+        if value.is_absolute() or value == Path() or ".." in value.parts:
+            raise ValueError(
+                "workflow changes_dir must be a non-empty relative path "
+                "within the workspace"
+            )
         return value
 
     @field_validator("install_commands", "init_commands")
