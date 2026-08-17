@@ -968,6 +968,54 @@ class TestCodexAgent:
             for value in session.last_spawn_mounts.values()
         )
 
+    def test_setup_uses_configured_workspace_directory_for_traces(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_cost_limits,
+        mock_pricing,
+    ) -> None:
+        """SCB_WORKSPACE_DIR controls where host trace mounts live."""
+        workspace_base = tmp_path / "workspaces"
+        monkeypatch.setenv("SCB_WORKSPACE_DIR", str(workspace_base))
+        runtime = FakeRuntime()
+        spec = DockerEnvironmentSpec(
+            name="test",
+            docker=DockerConfig(image="test-image"),
+        )
+        session = FakeSession(
+            runtime=runtime,
+            working_dir=tmp_path,
+            spec=spec,
+        )
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+        )
+
+        try:
+            agent.setup(session)
+
+            assert agent._trace_dir is not None
+            assert agent._trace_dir.parent == workspace_base
+            assert session.last_spawn_mounts is not None
+            assert str(agent._trace_dir) in session.last_spawn_mounts
+        finally:
+            agent.cleanup()
+
+        assert workspace_base.is_dir()
+
     def test_save_artifacts_logs_trace_counts(
         self, tmp_path, mock_cost_limits, mock_pricing
     ):

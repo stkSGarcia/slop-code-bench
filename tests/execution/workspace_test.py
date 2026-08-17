@@ -44,6 +44,25 @@ class TestWorkspace:
         finally:
             workspace.cleanup()
 
+    def test_prepare_uses_configured_workspace_directory(
+        self,
+        workspace: Workspace,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """SCB_WORKSPACE_DIR controls where temporary workspaces live."""
+        workspace_base = tmp_path / "workspaces"
+        monkeypatch.setenv("SCB_WORKSPACE_DIR", str(workspace_base))
+
+        try:
+            workspace.prepare()
+
+            assert workspace.working_dir.parent == workspace_base
+        finally:
+            workspace.cleanup()
+
+        assert workspace_base.is_dir()
+
     def test_prepare_extracts_snapshot(
         self,
         workspace: Workspace,

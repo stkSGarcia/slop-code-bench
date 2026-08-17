@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Use home-directory temp space so Docker bind mounts can access it.
+# export SCB_WORKSPACE_DIR="${SCB_WORKSPACE_DIR:-$HOME/.slop-workspaces}"
+
 workflow=openspec # openspec, artnet, or synergyspec
 case "$workflow" in
   openspec)
