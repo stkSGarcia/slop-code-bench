@@ -4,28 +4,36 @@ set -euo pipefail
 # Use home-directory temp space so Docker bind mounts can access it.
 # export SCB_WORKSPACE_DIR="${SCB_WORKSPACE_DIR:-$HOME/.slop-workspaces}"
 
-workflow=openspec # openspec, artnet, or synergyspec
+workflow="artnet" # openspec, artnet, or synergyspec
+version="1.3.2"
+
+# Configure the output-directory name for each workflow here.
+declare -A workflow_save_names=(
+  [openspec]=OpenSpec
+  [artnet]=ArtNet
+  [synergyspec]=SynergySpec
+)
+
 case "$workflow" in
   openspec)
     agent_config=configs/agents/codex-openspec.yaml
     environment_config=docker-python3.12-uv
-    save_dir=outputs/codex_openspec
     ;;
   artnet)
     agent_config=configs/agents/codex-artnet.yaml
     environment_config=docker-python3.12-uv-artnet
-    save_dir=outputs/codex_artnet
     ;;
   synergyspec)
     agent_config=configs/agents/codex-synergyspec.yaml
     environment_config=docker-python3.12-uv
-    save_dir=outputs/codex_synergyspec
     ;;
   *)
     echo "workflow must be openspec, artnet, or synergyspec" >&2
     exit 2
     ;;
 esac
+
+save_dir="outputs/${workflow_save_names[$workflow]}-v${version}"
 
 problems=(
   # Easy
