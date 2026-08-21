@@ -4,7 +4,7 @@ binary: codex
 version: "0.146.1"
 workflow:
   type: artnet
-  version: "1.3.0"
+  version: "1.3.2"
   local_packages:
     - source: ../artnet
       target: artnet

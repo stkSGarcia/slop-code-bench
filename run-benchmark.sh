@@ -5,13 +5,17 @@ set -euo pipefail
 # export SCB_WORKSPACE_DIR="${SCB_WORKSPACE_DIR:-$HOME/.slop-workspaces}"
 
 workflow="artnet" # openspec, artnet, or synergyspec
-version="1.3.2"
 
-# Configure the output-directory name for each workflow here.
+# Configure the output-directory name and version for each workflow here.
 declare -A workflow_save_names=(
   [openspec]=OpenSpec
   [artnet]=ArtNet
   [synergyspec]=SynergySpec
+)
+declare -A workflow_versions=(
+  [openspec]="1.7.0"
+  [artnet]="1.3.2"
+  [synergyspec]="3.0.2"
 )
 
 case "$workflow" in
@@ -33,6 +37,7 @@ case "$workflow" in
     ;;
 esac
 
+version="${workflow_versions[$workflow]}"
 save_dir="outputs/${workflow_save_names[$workflow]}-v${version}"
 
 problems=(
