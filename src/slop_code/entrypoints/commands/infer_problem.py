@@ -253,9 +253,10 @@ def infer_problem(
     )
 
     progress_queue = Queue()
-    runner.run_agent(
-        run_spec=run_spec,
-        agent=agent,
-        output_path=save_dir,
-        progress_queue=progress_queue,
-    )
+    with agent_config.problem_environment(env_spec, save_dir) as environment:
+        runner.run_agent(
+            run_spec=run_spec.model_copy(update={"environment": environment}),
+            agent=agent,
+            output_path=save_dir,
+            progress_queue=progress_queue,
+        )

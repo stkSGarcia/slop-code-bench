@@ -168,23 +168,26 @@ def test_missing_host_environment_fails_before_container_spawn(
         _agent(tmp_path, runtime, workflow)
 
 
-def test_problem_resource_is_injected_into_init_and_codex_environment(
+def test_compose_uri_is_injected_into_init_and_codex_environment(
     tmp_path: Path,
 ) -> None:
     workflow = _workflow(
-        resource_pool={
-            "env_var": "ARTNET_NEO4J_URI",
-            "values": ["bolt://neo4j-exp1:7687"],
-        }
-    ).allocate_problem_resources(["test-problem"])
-    agent, session = _agent(tmp_path, FakeRuntime([]), workflow)
+        compose={"file": "configs/agents/codex-artnet.compose.yaml"},
+        env={"ARTNET_NEO4J_URI": "bolt://neo4j:7687"},
+    )
+    runtime = FakeRuntime([_success(), _success()])
+    agent, session = _agent(tmp_path, runtime, workflow)
 
+    agent._ensure_workflow_initialized()
     _, invocation_env = agent._prepare_runtime_execution("task")
 
-    expected = "bolt://neo4j-exp1:7687"
+    expected = "bolt://neo4j:7687"
     assert session.spawn_env is not None
     assert session.spawn_env["ARTNET_NEO4J_URI"] == expected
     assert invocation_env["ARTNET_NEO4J_URI"] == expected
+    assert all(
+        call["env"]["ARTNET_NEO4J_URI"] == expected for call in runtime.calls
+    )
 
 
 def _command_result() -> AgentCommandResult:

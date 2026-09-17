@@ -4,7 +4,6 @@ docker:
   image: ghcr.io/astral-sh/uv:python3.12-trixie-slim
   workdir: /workspace
   mount_workspace: true
-  network: slopcodebench
 environment:
   env:
     UV_CACHE_DIR: /tmp/uv-cache

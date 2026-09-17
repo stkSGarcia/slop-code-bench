@@ -1,0 +1,32 @@
+# Build ArtNet with its own Dockerfile; the agent image includes the CLI.
+# Only Neo4j runs for each benchmark problem.
+# No host ports or fixed resource names: Compose isolates concurrent problems.
+services:
+  artifactnet-cli:
+    profiles: [build]
+    build:
+      context: ../../../artnet
+      target: runtime-base
+    image: slop-artnet:1.4.3
+
+  neo4j:
+    image: neo4j:5-community
+    environment:
+      NEO4J_AUTH: neo4j/12345678
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          cypher-shell -u "$${NEO4J_AUTH%%/*}"
+          -p "$${NEO4J_AUTH#*/}" 'RETURN 1' >/dev/null 2>&1
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+volumes:
+  neo4j-data:
+  neo4j-logs:

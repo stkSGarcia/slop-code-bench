@@ -168,34 +168,37 @@ def run_agent_on_problem(
             # Delete invalidated checkpoint directories
             _delete_invalidated_checkpoints(output_path, resume_info)
 
-    run_spec = AgentRunSpec(
-        seed=config.seed,
-        template=config.prompt_template,
-        problem=problem_config,
-        environment=config.env_spec,
-        pass_policy=config.pass_policy,
-        skip_evaluation=config.disable_evaluation,
-        concurrent_evaluation=config.concurrent_evaluation,
-        verbose=config.verbosity > 0,
-        image=config.image,
-        agent_type=config.agent_config.type,
-        agent_version=config.agent_config.version,
-        model_name=config.model_def.name,
-    )
-
-    return runner.run_agent(
-        run_spec=run_spec,
-        agent=Agent.from_config(
-            config.agent_config,
-            model=config.model_def,
-            credential=config.credential,
-            problem_name=problem_name,
-            verbose=run_spec.verbose,
+    with config.agent_config.problem_environment(
+        config.env_spec, output_path
+    ) as environment:
+        run_spec = AgentRunSpec(
+            seed=config.seed,
+            template=config.prompt_template,
+            problem=problem_config,
+            environment=environment,
+            pass_policy=config.pass_policy,
+            skip_evaluation=config.disable_evaluation,
+            concurrent_evaluation=config.concurrent_evaluation,
+            verbose=config.verbosity > 0,
             image=config.image,
-            thinking_preset=config.thinking_preset,
-            thinking_max_tokens=config.thinking_max_tokens,
-        ),
-        output_path=output_path,
-        progress_queue=progress_queue,
-        resume_info=resume_info,
-    )
+            agent_type=config.agent_config.type,
+            agent_version=config.agent_config.version,
+            model_name=config.model_def.name,
+        )
+
+        return runner.run_agent(
+            run_spec=run_spec,
+            agent=Agent.from_config(
+                config.agent_config,
+                model=config.model_def,
+                credential=config.credential,
+                problem_name=problem_name,
+                verbose=run_spec.verbose,
+                image=config.image,
+                thinking_preset=config.thinking_preset,
+                thinking_max_tokens=config.thinking_max_tokens,
+            ),
+            output_path=output_path,
+            progress_queue=progress_queue,
+            resume_info=resume_info,
+        )

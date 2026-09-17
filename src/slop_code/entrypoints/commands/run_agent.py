@@ -1459,12 +1459,6 @@ def run_agent(
 
     # 12. Update config with resolved/merged problems for future resumes
     run_cfg.problems = full_problem_list
-    full_problem_attempts = problem_runner.build_problem_attempts(
-        full_problem_list
-    )
-    agent_config = agent_config.allocate_problem_resources(
-        [attempt.attempt_name for attempt in full_problem_attempts]
-    )
 
     # 13. Save environment and config to run directory, build docker image if needed
     image_name = _prepare_run_artifacts(

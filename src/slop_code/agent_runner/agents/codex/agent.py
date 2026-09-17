@@ -9,6 +9,7 @@ import shlex
 import shutil
 import tempfile
 import typing as tp
+from contextlib import AbstractContextManager
 from pathlib import Path
 
 from jinja2 import Template
@@ -37,7 +38,6 @@ from slop_code.execution import DockerEnvironmentSpec
 from slop_code.execution import EnvironmentSpec
 from slop_code.execution import Session
 from slop_code.execution import StreamingRuntime
-from slop_code.execution.docker_runtime import DockerContextEntry
 from slop_code.logging import get_logger
 
 log = get_logger(__name__)
@@ -91,12 +91,9 @@ class CodexConfig(AgentConfigBase):
         base = super().get_image(env_name)
         if self.workflow is None:
             return base
-        workflow_version = self.workflow.version
-        if local_hash := self.workflow.local_packages_hash():
-            workflow_version = f"{workflow_version}-local-{local_hash}"
         return (
             f"{self.type}-{self.version}-{self.workflow.type}-"
-            f"{workflow_version}-{env_name}"
+            f"{self.workflow.version}-{env_name}"
         )
 
     def get_docker_file(self, base_image: str) -> str | None:
@@ -115,34 +112,24 @@ class CodexConfig(AgentConfigBase):
                 if self.workflow is not None
                 else ()
             ),
-            workflow_local_packages=(
-                self.workflow.local_packages
-                if self.workflow is not None
-                else ()
-            ),
         )
 
-    def get_docker_context(self) -> dict[str, DockerContextEntry]:
-        """Add configured local workflow packages to the image context."""
-        if self.workflow is None:
-            return {}
-        return {
-            package.context_path: DockerContextEntry(
-                source=package.resolved_source(),
-                excluded_names=frozenset(package.exclude),
-            )
-            for package in self.workflow.local_packages
-        }
+    def prepare_docker_build(self, environment: EnvironmentSpec) -> None:
+        """Build workflow images before rendering the agent image."""
+        if self.workflow is not None and self.workflow.compose is not None:
+            self.workflow.compose.build_images(environment)
 
-    def allocate_problem_resources(
+    def problem_environment(
         self,
-        problem_names: list[str],
-    ) -> CodexConfig:
-        """Assign configured workflow resources before workers are spawned."""
-        if self.workflow is None:
-            return self
-        workflow = self.workflow.allocate_problem_resources(problem_names)
-        return self.model_copy(update={"workflow": workflow})
+        environment: EnvironmentSpec,
+        output_path: Path,
+    ) -> AbstractContextManager[EnvironmentSpec]:
+        """Start workflow services before creating the agent's session."""
+        if self.workflow is not None and self.workflow.compose is not None:
+            return self.workflow.compose.problem_environment(
+                environment, output_path
+            )
+        return super().problem_environment(environment, output_path)
 
 
 class CodexAgent(Agent):
@@ -394,12 +381,6 @@ class CodexAgent(Agent):
         resolved.update(
             {name: os.environ[name] for name in self.workflow.env_from_host}
         )
-        try:
-            resolved.update(
-                self.workflow.resource_environment(self.problem_name)
-            )
-        except ValueError as exc:
-            raise AgentError(str(exc)) from exc
         self._workflow_runtime_env = resolved
         return dict(resolved)
 

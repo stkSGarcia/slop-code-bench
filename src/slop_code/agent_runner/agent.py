@@ -7,6 +7,8 @@ import traceback
 from abc import ABC
 from abc import abstractmethod
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
+from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from typing import (
@@ -35,8 +37,8 @@ from slop_code.agent_runner.trajectory import TrajectoryStep
 from slop_code.common.llms import APIPricing
 from slop_code.common.llms import ModelDefinition
 from slop_code.common.llms import ThinkingPreset
+from slop_code.execution import EnvironmentSpec
 from slop_code.execution import Session
-from slop_code.execution.docker_runtime import DockerContextEntry
 from slop_code.execution.runtime import RuntimeEvent
 from slop_code.logging import get_logger
 
@@ -155,21 +157,16 @@ class AgentConfigBase(BaseModel):
         template = Template(template).render(base_image=base_image)
         return template
 
-    def get_docker_context(self) -> dict[str, DockerContextEntry]:
-        """Return additional host paths for the agent image build context."""
-        return {}
+    def prepare_docker_build(self, environment: EnvironmentSpec) -> None:
+        """Prepare any dependencies needed to build the agent image."""
 
-    def allocate_problem_resources(
+    def problem_environment(
         self,
-        problem_names: list[str],
-    ) -> AgentConfigBase:
-        """Return a config with resources assigned to each problem.
-
-        Agent configurations without resource pools are unchanged. Agents
-        that support pooled external resources can override this hook without
-        coupling the problem runner to an agent implementation.
-        """
-        return self
+        environment: EnvironmentSpec,
+        output_path: Path,
+    ) -> AbstractContextManager[EnvironmentSpec]:
+        """Manage services needed for the lifetime of one problem attempt."""
+        return nullcontext(environment)
 
 
 class CheckpointInferenceResult(BaseModel):
