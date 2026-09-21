@@ -34,7 +34,7 @@ def build_agent_docker(
     force_build_base: bool = False,
 ) -> str:
     agent_image_name = f"{docker_runtime.IMAGE_NAME_PREFIX}:{agent_config.get_image(environment.name)}"
-    agent_config.prepare_docker_build(environment)
+    rebuild_agent = agent_config.prepare_docker_build(environment)
     client = docker.from_env()
     docker_runtime.build_base_image(
         client=client,
@@ -49,7 +49,7 @@ def build_agent_docker(
         client=client,
         image_name=agent_image_name,
         dockerfile=docker_file,
-        force_build=force_build,
+        force_build=force_build or rebuild_agent,
     )
     client.close()
     return agent_image_name

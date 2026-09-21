@@ -157,8 +157,9 @@ class AgentConfigBase(BaseModel):
         template = Template(template).render(base_image=base_image)
         return template
 
-    def prepare_docker_build(self, environment: EnvironmentSpec) -> None:
-        """Prepare any dependencies needed to build the agent image."""
+    def prepare_docker_build(self, environment: EnvironmentSpec) -> bool:
+        """Prepare dependencies and return whether to rebuild the agent image."""
+        return False
 
     def problem_environment(
         self,

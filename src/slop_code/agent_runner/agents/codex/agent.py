@@ -114,10 +114,12 @@ class CodexConfig(AgentConfigBase):
             ),
         )
 
-    def prepare_docker_build(self, environment: EnvironmentSpec) -> None:
-        """Build workflow images before rendering the agent image."""
+    def prepare_docker_build(self, environment: EnvironmentSpec) -> bool:
+        """Build workflow images and request a build to refresh copied files."""
         if self.workflow is not None and self.workflow.compose is not None:
             self.workflow.compose.build_images(environment)
+            return bool(self.workflow.compose.build_services)
+        return False
 
     def problem_environment(
         self,
