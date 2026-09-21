@@ -1,6 +1,6 @@
 # Build ArtNet with its own Dockerfile; the agent image includes the CLI.
 # Only Neo4j runs for each benchmark problem.
-# No host ports or fixed resource names: Compose isolates concurrent problems.
+# Random loopback ports and project-scoped resources isolate concurrent problems.
 services:
   artifactnet-cli:
     profiles: [build]
@@ -11,6 +11,9 @@ services:
 
   neo4j:
     image: neo4j:5-community
+    ports:
+      - "127.0.0.1::7474"
+      - "127.0.0.1::7687"
     environment:
       NEO4J_AUTH: neo4j/12345678
     volumes:
