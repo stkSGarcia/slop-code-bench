@@ -26,9 +26,9 @@ services:
           cypher-shell -u "$${NEO4J_AUTH%%/*}"
           -p "$${NEO4J_AUTH#*/}" 'RETURN 1' >/dev/null 2>&1
       interval: 10s
-      timeout: 10s
+      timeout: 60s
       retries: 12
-      start_period: 30s
+      start_period: 120s
 
 volumes:
   neo4j-data:

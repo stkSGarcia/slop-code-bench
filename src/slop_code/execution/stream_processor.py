@@ -105,6 +105,7 @@ def process_stream(
     yielding_stdout = yield_only_after is None
     yielding_stderr = yield_only_after is None
     timed_out = False
+    stream_finished = False
 
     def handle_event(
         kind: Literal["stdout", "stderr"],
@@ -145,21 +146,31 @@ def process_stream(
 
         logger.error("Received unknown event", kind=kind, payload=payload)
 
-    while (exit_code := poll_fn()) is None:
+    exit_code = None
+    while True:
+        if exit_code is None:
+            exit_code = poll_fn()
+        if stream_finished and exit_code is not None:
+            break
+
         if (remaining := timeout_fn()) <= 0:
             timed_out = True
             break
 
+        if stream_finished:
+            # EOF can arrive before the process exit status is available.
+            time.sleep(min(0.01, remaining))
+            continue
+
         try:
             kind, payload = event_queue.get(timeout=remaining)
         except queue.Empty:
-            if (exit_code := poll_fn()) is not None:
-                break
             continue
 
         if kind == "finished":
             logger.debug("Received finished event")
-            break
+            stream_finished = True
+            continue
 
         if payload is None:
             logger.error("Received empty stream event", kind=kind)
@@ -188,7 +199,8 @@ def process_stream(
     stop_event.set()
     thread.join()
 
-    exit_code = exit_code or poll_fn()
+    if exit_code is None:
+        exit_code = poll_fn()
     if exit_code is None:
         exit_code = -1
     logger.debug(
