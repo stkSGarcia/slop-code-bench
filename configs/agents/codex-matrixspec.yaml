@@ -1,0 +1,53 @@
+type: codex
+binary: codex
+
+version: "0.146.1"
+workflow:
+  type: matrixspec
+  version: "0.4.1-beta.3"
+  changes_dir: matspec/changes
+  install_commands:
+    - [sh, -c, 'ln -s /opt/matrixspec/bin/matspec.js "$NPM_CONFIG_PREFIX/bin/matspec"']
+  init_commands:
+    - [matspec, init, ., --integration, codex, --no-template-update, --json]
+    - [sh, -c, 'mkdir -p .codex/skills && cp -R .agents/skills/. .codex/skills/']
+  env:
+    CI: "true"
+    NO_COLOR: "1"
+    MATSPEC_NO_REPORT: "1"
+  skills:
+    - name: matspec
+      arguments:
+        - |
+          This benchmark invocation is one complete checkpoint. Create a new
+          uniquely named change using `matspec start <unique-id> --profile light
+          --json`. Do not reuse a previous checkpoint's change.
+
+          Benchmark policy: the checkpoint specification below is the task
+          authority. This unattended run authorizes generation, stage acceptance,
+          implementation, and archive after the applicable checks pass. Override
+          interactive skill instructions to ask questions or wait for approval.
+          Resolve unspecified details conservatively from the specification and
+          repository evidence; record assumptions as agent inferences, never as
+          human confirmations.
+
+          Complete the entire MatSpec Light lifecycle inside this one workflow
+          node: proposal, delta-spec, tasks, implementation, review, finalization,
+          and archive. Use `matspec go --json` and the returned stage contracts.
+          Use CLI commands to advance state; never edit .matspec-state.json.
+          Implement the code, execute relevant verification, and record completed
+          tasks through the CLI. Fix review blockers before accepting review.
+          Before `matspec done --json`, update matspec/specs/spec.md and
+          matspec/specs/design.md from the final implementation and preserve
+          delta REQ identifiers.
+          Do not finish after merely preparing documents or a plan, and do not
+          invent passing evidence or bypass validation or review guards.
+        - "{task}"
+timeout: 7200
+extra_args: []
+env: {}
+cost_limits:
+  cost_limit: 0
+  step_limit: 0
+  net_cost_limit: 0
+  max_retries: 0
