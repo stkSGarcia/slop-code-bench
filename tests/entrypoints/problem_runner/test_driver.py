@@ -237,6 +237,7 @@ def test_run_problems_recycles_workers_between_problems(
             config: object,
             progress_queue: queue.Queue,
         ) -> Future[TaskResult]:
+            del fn, config, progress_queue
             future: Future[TaskResult] = Future()
             future.set_result(
                 TaskResult(

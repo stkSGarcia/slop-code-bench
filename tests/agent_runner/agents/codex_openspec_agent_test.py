@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -65,7 +65,8 @@ class FakeSession:
     spawn_env: dict[str, str] | None = None
 
     def spawn(self, **kwargs: object) -> FakeRuntime:
-        self.spawn_env = dict(kwargs.get("env_vars", {}))
+        env_vars = cast("dict[str, str]", kwargs.get("env_vars", {}))
+        self.spawn_env = dict(env_vars)
         return self.runtime
 
 
@@ -134,6 +135,7 @@ def _agent(
         max_thinking_tokens=None,
         extra_args=[],
         env={"EXISTING": "yes"},
+        model_provider=None,
         workflow=workflow,
     )
     agent.setup(session)  # type: ignore[arg-type]

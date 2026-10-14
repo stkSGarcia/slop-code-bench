@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ import pytest
 
 from slop_code.agent_runner.agents.codex import CodexAgent
 from slop_code.agent_runner.agents.codex import CodexConfig
+from slop_code.agent_runner.agents.codex.agent import CodexModelProvider
 from slop_code.agent_runner.agents.utils import HOME_PATH
 from slop_code.agent_runner.credentials import ProviderCredential
 from slop_code.agent_runner.models import AgentCostLimits
@@ -25,6 +27,7 @@ from slop_code.execution import DockerEnvironmentSpec
 from slop_code.execution.compose import WorkflowComposeConfig
 from slop_code.execution.runtime import RuntimeEvent
 from slop_code.execution.runtime import RuntimeResult
+from slop_code.execution.session import Session
 
 
 class FakeRuntime:
@@ -139,10 +142,12 @@ class TestCodexConfig:
     def test_version_is_required(self, mock_cost_limits):
         """Version field is required for docker template."""
         with pytest.raises(Exception):  # Pydantic validation error
-            CodexConfig(
-                type="codex",
-                cost_limits=mock_cost_limits,
-                # Missing version
+            CodexConfig.model_validate(
+                {
+                    "type": "codex",
+                    "cost_limits": mock_cost_limits,
+                    # Missing version
+                }
             )
 
     def test_config_with_version(self, mock_cost_limits):
@@ -392,6 +397,68 @@ class TestCodexConfig:
 class TestCodexAgent:
     """Tests for CodexAgent."""
 
+    @pytest.mark.parametrize(
+        "condition", ["openspec", "artnet", "synergyspec", "matrixspec"]
+    )
+    def test_repository_workflows_keep_runtime_uid_default(
+        self,
+        condition: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        mock_model_def: ModelDefinition,
+        mock_credential: ProviderCredential,
+    ) -> None:
+        """Fork workflows retain setup and the upstream runtime uid policy."""
+        config_path = (
+            Path(__file__).parents[3]
+            / "configs"
+            / "agents"
+            / f"codex-{condition}.yaml"
+        )
+        _, data = load_agent_config(config_path)
+        config = build_agent_config(data)
+        assert isinstance(config, CodexConfig)
+        assert config.workflow is not None
+        assert config.workflow.type == condition
+
+        dockerfile = config.get_docker_file("base-image:latest")
+        assert dockerfile is not None
+        permission_step = dockerfile.index('RUN chmod -R a+rwX "$HOME"')
+        for command in config.workflow.install_commands:
+            assert dockerfile.index(f"RUN {shlex.join(command)}") < permission_step
+
+        for name in config.workflow.env_from_host:
+            monkeypatch.setenv(name, "test-host-value")
+        session = MagicMock(spec=Session)
+        session.spec = DockerEnvironmentSpec(
+            name="test", docker=DockerConfig(image="test-image")
+        )
+        session.working_dir = tmp_path
+        agent = CodexAgent._from_config(
+            config=config,
+            model=mock_model_def,
+            credential=mock_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+        assert isinstance(agent, CodexAgent)
+        assert agent.workflow is config.workflow
+        assert agent.model_provider is None
+
+        try:
+            agent.setup(session)
+
+            spawn_args = session.spawn.call_args.kwargs
+            assert "user" not in spawn_args
+            assert spawn_args["env_vars"]["HOME"] == HOME_PATH
+            for key, value in config.workflow.env.items():
+                assert spawn_args["env_vars"][key] == value
+            for key in config.workflow.env_from_host:
+                assert spawn_args["env_vars"][key] == "test-host-value"
+        finally:
+            agent.cleanup()
+
     def test_from_config_creates_agent(
         self, mock_cost_limits, mock_model_def, mock_credential
     ):
@@ -453,13 +520,14 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         # Before setup, session access should raise
         with pytest.raises(Exception):
             _ = agent.session
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         # After setup, session should be accessible
         assert agent.session == session
@@ -488,9 +556,10 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         # Set some state
         agent._last_prompt = "some prompt"
@@ -519,6 +588,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("do something")
@@ -547,6 +617,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("do something")
@@ -572,6 +643,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("continue", resume=True)
@@ -594,6 +666,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("do something")
@@ -620,6 +693,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=["--custom-flag", "value"],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("do something")
@@ -648,9 +722,10 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         agent._last_prompt = "test prompt"
 
         output_dir = tmp_path / "artifacts"
@@ -759,9 +834,10 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         agent.run("do something")
 
         assert agent.usage.cost == pytest.approx(1.25)
@@ -822,9 +898,10 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         assert agent._trace_dir is not None
         trace_file = agent._trace_dir / "rollout.jsonl"
         trace_file.write_text(
@@ -886,9 +963,10 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
         assert agent._trace_dir is not None
         trace_dir = agent._trace_dir / "traces"
         trace_dir.mkdir(parents=True, exist_ok=True)
@@ -931,9 +1009,10 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
-        agent.setup(session)
+        agent.setup(cast("Session", session))
 
         assert session.last_spawn_env_vars is not None
         assert session.last_spawn_env_vars.get("HOME") == HOME_PATH
@@ -978,10 +1057,11 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         try:
-            agent.setup(session)
+            agent.setup(cast("Session", session))
 
             assert agent._trace_dir is not None
             assert agent._trace_dir.parent == workspace_base
@@ -1010,6 +1090,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
         logger = FakeLogger()
         agent.log = logger
@@ -1049,6 +1130,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         trace_dir = tmp_path / "codex_traces"
@@ -1092,6 +1174,7 @@ class TestCodexAgent:
             max_thinking_tokens=None,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("do something")
@@ -1121,6 +1204,7 @@ class TestCodexAgent:
             max_thinking_tokens=8192,
             extra_args=[],
             env={},
+            model_provider=None,
         )
 
         command = agent._build_command("do something")
@@ -1128,3 +1212,190 @@ class TestCodexAgent:
         assert "--config" in command
         config_idx = command.index("--config")
         assert "model_max_output_tokens=8192" in command[config_idx + 1]
+
+
+class TestCodexModelProviderRouting:
+    """Tests for routing Codex through a gateway provider endpoint."""
+
+    @pytest.fixture
+    def portkey_credential(self):
+        """Credential resolved from the portkey provider."""
+        from slop_code.agent_runner.credentials import CredentialType
+
+        return ProviderCredential(
+            provider="portkey",
+            value="test-portkey-key",
+            source="SCB_PORTKEY",
+            destination_key="PORTKEY_API_KEY",
+            credential_type=CredentialType.ENV_VAR,
+        )
+
+    @pytest.fixture
+    def gateway_model(self, mock_pricing):
+        """Model declaring a codex endpoint plus a portkey-specific slug."""
+        return ModelDefinition(
+            internal_name="gpt-5.6-sol",
+            provider="openai",
+            pricing=mock_pricing,
+            provider_slugs={"portkey": "@openai/gpt-5.6-sol"},
+            agent_specific={"codex": {"endpoint": "openai", "thinking": "high"}},
+        )
+
+    def test_from_config_without_endpoint_leaves_provider_unset(
+        self, mock_cost_limits, mock_model_def, mock_credential
+    ):
+        """A model with no codex endpoint keeps Codex pointed at OpenAI."""
+        config = CodexConfig(
+            type="codex", version="1.0.0", cost_limits=mock_cost_limits
+        )
+
+        agent = CodexAgent._from_config(
+            config=config,
+            model=mock_model_def,
+            credential=mock_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert agent.model_provider is None
+        assert "model_provider" not in " ".join(agent._build_command("go"))
+
+    def test_from_config_without_provider_endpoint_leaves_provider_unset(
+        self, mock_cost_limits, gateway_model, mock_credential
+    ):
+        """Declaring an endpoint is inert when the provider declares none."""
+        config = CodexConfig(
+            type="codex", version="1.0.0", cost_limits=mock_cost_limits
+        )
+
+        agent = CodexAgent._from_config(
+            config=config,
+            model=gateway_model,
+            credential=mock_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert agent.model_provider is None
+
+    def test_from_config_builds_provider_from_credential_provider(
+        self, mock_cost_limits, gateway_model, portkey_credential
+    ):
+        """The endpoint resolves against the credential provider, not the model's."""
+        config = CodexConfig(
+            type="codex", version="1.0.0", cost_limits=mock_cost_limits
+        )
+
+        agent = CodexAgent._from_config(
+            config=config,
+            model=gateway_model,
+            credential=portkey_credential,
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+        )
+
+        assert agent.model_provider == CodexModelProvider(
+            provider_id="portkey",
+            base_url="https://api.portkey.ai/v1",
+            env_key="PORTKEY_API_KEY",
+        )
+        assert agent.model == "@openai/gpt-5.6-sol"
+
+    def test_from_config_rejects_non_openai_endpoint(
+        self, mock_cost_limits, mock_pricing, portkey_credential
+    ):
+        """Codex only speaks the OpenAI wire format."""
+        model = ModelDefinition(
+            internal_name="gpt-5.6-sol",
+            provider="openai",
+            pricing=mock_pricing,
+            agent_specific={"codex": {"endpoint": "anthropic"}},
+        )
+        config = CodexConfig(
+            type="codex", version="1.0.0", cost_limits=mock_cost_limits
+        )
+
+        with pytest.raises(ValueError, match="OpenAI-compatible endpoint"):
+            CodexAgent._from_config(
+                config=config,
+                model=model,
+                credential=portkey_credential,
+                problem_name="test-problem",
+                verbose=False,
+                image="test-image",
+            )
+
+    def test_build_command_registers_and_selects_provider(
+        self, mock_cost_limits, mock_pricing
+    ):
+        """_build_command emits the model_providers config flags before --model."""
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=None,
+            binary="codex",
+            model="@openai/gpt-5.6-sol",
+            timeout=None,
+            thinking="high",
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+            model_provider=CodexModelProvider(
+                provider_id="portkey",
+                base_url="https://api.portkey.ai/v1",
+                env_key="PORTKEY_API_KEY",
+            ),
+        )
+
+        command = agent._build_command("do something")
+        configs = [
+            command[idx + 1]
+            for idx, arg in enumerate(command)
+            if arg == "--config"
+        ]
+
+        assert configs == [
+            'model_provider="portkey"',
+            'model_providers.portkey.name="portkey"',
+            'model_providers.portkey.base_url="https://api.portkey.ai/v1"',
+            'model_providers.portkey.env_key="PORTKEY_API_KEY"',
+            'model_providers.portkey.wire_api="responses"',
+            'model_reasoning_effort="high"',
+        ]
+        assert command[command.index("--model") + 1] == "@openai/gpt-5.6-sol"
+
+    def test_prepare_runtime_execution_exports_provider_env_key(
+        self, mock_cost_limits, mock_pricing, portkey_credential
+    ):
+        """The env_key named in the config flags is what gets exported."""
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=mock_pricing,
+            credential=portkey_credential,
+            binary="codex",
+            model="@openai/gpt-5.6-sol",
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+            model_provider=CodexModelProvider(
+                provider_id="portkey",
+                base_url="https://api.portkey.ai/v1",
+                env_key="PORTKEY_API_KEY",
+            ),
+        )
+
+        command, env_overrides = agent._prepare_runtime_execution("do it")
+
+        assert env_overrides["PORTKEY_API_KEY"] == "test-portkey-key"
+        assert 'model_providers.portkey.env_key="PORTKEY_API_KEY"' in command

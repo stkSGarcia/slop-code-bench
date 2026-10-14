@@ -46,6 +46,7 @@ class Workspace:
         initial_snapshot: Snapshot | None,
         snapshot_fn: Callable[[Path], Snapshot],
         static_assets: dict[str, ResolvedStaticAsset] | None = None,
+        *,
         is_agent_infer: bool = False,
     ):
         """Initialize a new workspace.

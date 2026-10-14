@@ -20,4 +20,7 @@ RUN npm install -g @openai/codex@{{ version }} && \
 RUN {{ command }}
 {% endfor %}
 
+# Match the default Codex image: runtime uid/gid follows the host user.
+RUN chmod -R a+rwX "$HOME"
+
 CMD ["codex"]

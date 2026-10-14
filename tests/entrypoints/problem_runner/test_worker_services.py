@@ -221,6 +221,7 @@ def test_codex_without_compose_keeps_execution_environment(
         run_agent.call_args.kwargs["run_spec"].environment
         is task_config.env_spec
     )
+    assert isinstance(task_config.env_spec, DockerEnvironmentSpec)
     assert task_config.env_spec.docker.network == "bridge"
 
 

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 from pathlib import Path
-from typing import cast
 
 import typer
 import yaml
@@ -416,7 +415,7 @@ def _resolve_environment_and_credentials(
     env_spec = config_loader.resolve_environment(
         run_cfg.environment_config_path or run_cfg.environment
     )
-    env_spec_typed = cast("EnvironmentSpecType", env_spec)
+    env_spec_typed = env_spec
 
     # Look up ModelDefinition from catalog
     model_def = ModelCatalog.get(run_cfg.model.name)
@@ -754,6 +753,7 @@ def _resolve_problem_names(
 
 def _resolve_output_directory(
     config_output_path: str,
+    *,
     debug: bool,
 ) -> tuple[Path, bool]:
     """Resolve and prepare output directory.
@@ -790,6 +790,7 @@ def _handle_resume_validation(
     run_dir: Path,
     run_cfg: ResolvedRunConfig,
     env_spec: EnvironmentSpecType,
+    *,
     resume: bool,
     overwrite: bool,
 ) -> None:
@@ -828,6 +829,7 @@ def _handle_early_completion(
     run_dir: Path,
     problems_base_path: Path,
     console: Console,
+    *,
     evaluate: bool,
     requested: list[str],
 ) -> bool:
@@ -927,14 +929,14 @@ def _create_task_config(
     model_def: ModelDefinition,
     credential: ProviderCredential,
     run_cfg: ResolvedRunConfig,
-    seed: int | None,
+    seed: int,
     verbosity: int,
+    *,
     debug: bool,
     evaluate: bool,
     live_progress: bool,
     image_name: str,
     resume: bool,
-    *,
     concurrent_evaluation: bool = False,
 ) -> problem_runner.RunTaskConfig:
     """Create task configuration for problem execution.
@@ -1299,7 +1301,7 @@ def run_agent(
 
         # Resolve output directory
         run_dir, run_dir_preexisted = _resolve_output_directory(
-            run_cfg.output_path, ctx.obj.debug
+            run_cfg.output_path, debug=ctx.obj.debug
         )
 
     # 2. Resolve managed problem catalog
@@ -1399,7 +1401,11 @@ def run_agent(
 
         # Validate config matches saved config when resuming
         _handle_resume_validation(
-            run_dir, run_cfg, env_spec, is_resuming, ctx.obj.overwrite
+            run_dir,
+            run_cfg,
+            env_spec,
+            resume=is_resuming,
+            overwrite=ctx.obj.overwrite,
         )
 
         to_run, skipped, rerun_reasons = _filter_problem_attempts_for_execution(
@@ -1441,8 +1447,8 @@ def run_agent(
             run_dir,
             problem_root,
             console,
-            evaluate,
-            requested,
+            evaluate=evaluate,
+            requested=requested,
         ):
             return
 
