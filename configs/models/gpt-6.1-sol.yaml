@@ -1,0 +1,15 @@
+internal_name: gpt-6.1-sol
+provider: openai
+pricing:
+  # Standard USD per million tokens: https://developers.openai.com/api/docs/pricing
+  # Base rates apply above 272K input tokens.
+  input: 4.00
+  output: 15.00
+  cache_read: 0.20
+  cache_write: 5.00
+  prompt_tiers:
+    - max_input_tokens: 272000
+      input: 2.00
+      output: 10.00
+      cache_read: 0.10
+      cache_write: 2.50

@@ -79,7 +79,7 @@ exec uv run slop-code run \
   --agent "$agent_config" \
   --environment "$environment_config" \
   --prompt checkpoint-only \
-  --model codex_auth/gpt-5.5 \
+  --model codex_auth/gpt-6.1-sol \
   --num-workers 4 \
   "${problem_args[@]}" \
   thinking=high \

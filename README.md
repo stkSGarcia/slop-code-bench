@@ -13,8 +13,8 @@ top of the script to one of these four conditions:
 | `synergyspec` | `configs/agents/codex-synergyspec.yaml` | `docker-python3.12-uv` | `outputs/SynergySpec-v3.0.2/` |
 | `matspec` | `configs/agents/codex-matrixspec.yaml` | `docker-python3.12-uv-matrixspec` | `outputs/MatrixSpec-v0.4.1-beta.3/` |
 
-All four use Codex CLI `0.146.1`. The script currently selects
-`codex_auth/gpt-5.5`, `thinking=high`, 16 problems, and four workers. Edit the
+All four use Codex CLI `0.162.1`. The script currently selects
+`codex_auth/gpt-6.1-sol`, `thinking=high`, 16 problems, and four workers. Edit the
 `problems` array and `--num-workers` to change the batch. Output naming is
 controlled by `workflow_save_names` and `workflow_versions`; keep those values
 consistent with the selected agent configuration.
