@@ -86,9 +86,22 @@ class APIPricing(BaseModel):
     cache_write: float = 0
     prompt_tiers: list[APIPricingTier] = Field(default_factory=list)
 
-    def get_cost(self, tokens: TokenUsage) -> float:
+    def get_cost(
+        self,
+        tokens: TokenUsage,
+        *,
+        cache_write_in_input: bool = False,
+    ) -> float:
+        """Price one request, allowing inclusive cache-write input counts.
+
+        OpenAI includes cache writes in input_tokens. Other adapters can
+        report writes separately, so retain that convention by default.
+        """
         rates = self._rates_for(tokens)
-        uncached_input_tokens = max(tokens.input - tokens.cache_read, 0)
+        writes_in_input = tokens.cache_write if cache_write_in_input else 0
+        uncached_input_tokens = max(
+            tokens.input - tokens.cache_read - writes_in_input, 0
+        )
         mil_input = uncached_input_tokens / 1_000_000
         mil_output = tokens.output / 1_000_000
         mil_cache_read = tokens.cache_read / 1_000_000

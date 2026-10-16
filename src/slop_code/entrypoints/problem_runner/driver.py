@@ -206,7 +206,7 @@ def _run_problems(
             problem_states.handle_update(
                 problem_name, agent_usage, metrics_tracker
             )
-            net_cost = metrics_tracker.usage.cost + (agent_usage.cost or 0.0)
+            net_cost = problem_states[problem_name].net_cost
 
             logger.info(
                 f"'{problem_name}': progress update",
@@ -217,7 +217,12 @@ def _run_problems(
                 ).total_seconds(),
                 cost=float(f"{net_cost:.5f}"),
                 steps=agent_usage.steps,
-                total_steps=metrics_tracker.usage.steps + agent_usage.steps,
+                total_steps=metrics_tracker.usage.steps
+                + (
+                    0
+                    if metrics_tracker.checkpoint_usage_included
+                    else agent_usage.steps
+                ),
             )
 
             if problem_states[problem_name].state == AgentStateEnum.ERROR:

@@ -660,6 +660,7 @@ class AgentRunner:
             checkpoint=checkpoint.name,
         )
         self.agent.finish_checkpoint(reset_context=True)
+        self.metrics_tracker.checkpoint_usage_included = False
 
     def finish(self) -> dict[str, Any]:
         """Cleanup agent, stop monitoring, save final results."""
@@ -1176,6 +1177,7 @@ def agent_progress_watcher(
     logger.debug("Starting agent progress watcher", problem=problem_name)
     prev_cost = prev_steps = prev_tokens = prev_net_tokens = None
     prev_state = AgentStateEnum.PENDING
+    prev_usage_included = None
     while True:
         if (
             prev_cost == agent.usage.cost
@@ -1183,6 +1185,8 @@ def agent_progress_watcher(
             and prev_tokens == agent.usage.current_tokens
             and prev_net_tokens == agent.usage.net_tokens
             and prev_state == metrics_tracker.state
+            and prev_usage_included
+            == metrics_tracker.checkpoint_usage_included
         ):
             threading.Event().wait(0.25)
             continue
@@ -1192,6 +1196,7 @@ def agent_progress_watcher(
         prev_net_tokens = agent.usage.net_tokens
 
         prev_state = metrics_tracker.state
+        prev_usage_included = metrics_tracker.checkpoint_usage_included
         progress_queue.put(
             (
                 problem_name,

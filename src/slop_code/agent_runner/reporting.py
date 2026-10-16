@@ -199,6 +199,7 @@ class MetricsTracker(BaseModel):
     error_message: str | None = None
     error_traceback: str | None = None
     checkpoint_results: list[CheckpointEvalResult] = Field(default_factory=list)
+    checkpoint_usage_included: bool = False
 
     def finish_checkpoint(self, usage: UsageTracker) -> None:
         """Update usage metrics after checkpoint completion.
@@ -210,6 +211,7 @@ class MetricsTracker(BaseModel):
         self.usage.steps += usage.steps
         self.usage.net_tokens += usage.net_tokens
         self.usage.current_tokens += usage.current_tokens
+        self.checkpoint_usage_included = True
 
     def had_error(self) -> bool:
         """Check if the agent is in an error state.

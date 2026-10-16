@@ -16,6 +16,25 @@ from slop_code.common.llms import TokenUsage
 class TestAPIPricing:
     """Tests for APIPricing calculations."""
 
+    @pytest.mark.parametrize(
+        ("inclusive_writes", "uncached"), [(False, 800), (True, 500)]
+    )
+    def test_cache_write_input_conventions(
+        self, *, inclusive_writes: bool, uncached: int
+    ) -> None:
+        pricing = APIPricing(
+            input=2, output=10, cache_read=0.1, cache_write=2.5
+        )
+        tokens = TokenUsage(
+            input=1_000, output=500, cache_read=200, cache_write=300
+        )
+
+        assert pricing.get_cost(
+            tokens, cache_write_in_input=inclusive_writes
+        ) == pytest.approx(
+            (uncached * 2 + 500 * 10 + 200 * 0.1 + 300 * 2.5) / 1_000_000
+        )
+
     def test_get_cost_subtracts_cache_read_from_input(self) -> None:
         """Cache reads should be billed at cache rate, not input rate."""
         pricing = APIPricing(input=1.0, output=2.0, cache_read=0.1)

@@ -183,6 +183,7 @@ class ProblemState(BaseModel):
         default=None,
         description="Cumulative usage across checkpoints",
     )
+    checkpoint_usage_included: bool = False
     checkpoint_order: list[str] = Field(
         default_factory=list,
         description="Ordered list of checkpoint names",
@@ -229,6 +230,7 @@ class ProblemState(BaseModel):
             self.started = metrics_tracker.started
         self.checkpoint_started = metrics_tracker.checkpoint_started
         self.overall_usage = metrics_tracker.usage
+        self.checkpoint_usage_included = metrics_tracker.checkpoint_usage_included
         self.error_type = metrics_tracker.error_type
         self.error_message = metrics_tracker.error_message
         self.error_traceback = metrics_tracker.error_traceback
@@ -292,7 +294,10 @@ class ProblemState(BaseModel):
     @property
     def prior_cost(self) -> float:
         """Cost from prior checkpoints."""
-        return self.overall_usage.cost if self.overall_usage else 0.0
+        cost = self.overall_usage.cost if self.overall_usage else 0.0
+        if self.checkpoint_usage_included:
+            cost -= self.checkpoint_cost
+        return cost
 
     @property
     def net_cost(self) -> float:
@@ -322,9 +327,7 @@ class ProblemState(BaseModel):
             "total_steps": (
                 self.overall_usage.steps if self.overall_usage else 0
             ),
-            "total_cost": (
-                self.overall_usage.cost if self.overall_usage else 0.0
-            ),
+            "total_cost": self.net_cost,
         }
 
     def _get_error_info(self) -> dict[str, str | None]:

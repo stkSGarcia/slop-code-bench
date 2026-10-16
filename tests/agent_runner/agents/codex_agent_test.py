@@ -18,9 +18,11 @@ from slop_code.agent_runner.agents.codex.agent import CodexModelProvider
 from slop_code.agent_runner.agents.utils import HOME_PATH
 from slop_code.agent_runner.credentials import ProviderCredential
 from slop_code.agent_runner.models import AgentCostLimits
+from slop_code.agent_runner.models import AgentError
 from slop_code.agent_runner.registry import build_agent_config
 from slop_code.common.llms import APIPricing
 from slop_code.common.llms import ModelDefinition
+from slop_code.common.llms import TokenUsage
 from slop_code.entrypoints.config.loader import load_agent_config
 from slop_code.execution import DockerConfig
 from slop_code.execution import DockerEnvironmentSpec
@@ -933,6 +935,151 @@ class TestCodexAgent:
         assert agent.usage.net_tokens.output == 50
         assert agent.usage.net_tokens.cache_read == 25
         assert agent.usage.net_tokens.reasoning == 10
+
+    @pytest.mark.parametrize("cached_only", [False, True])
+    def test_run_prices_all_threads_once_and_preserves_cache_writes(
+        self,
+        tmp_path: Path,
+        mock_cost_limits: AgentCostLimits,
+        *,
+        cached_only: bool,
+    ) -> None:
+        pricing = APIPricing.model_validate(
+            {
+                "input": 4,
+                "output": 15,
+                "cache_read": 0.2,
+                "cache_write": 5,
+                "prompt_tiers": [
+                    {
+                        "max_input_tokens": 272_000,
+                        "input": 2,
+                        "output": 10,
+                        "cache_read": 0.1,
+                        "cache_write": 2.5,
+                    }
+                ],
+            }
+        )
+        usage = {
+            "input_tokens": 100_000,
+            "cached_input_tokens": 80_000,
+            "cache_write_input_tokens": 5_000,
+            "output_tokens": 1_000,
+            "reasoning_output_tokens": 100,
+        }
+        if cached_only:
+            usage = {
+                "input_tokens": 1,
+                "cached_input_tokens": 1,
+                "output_tokens": 0,
+            }
+        stdout = json.dumps(
+            {"type": "turn.completed", "usage": usage}
+        ) + "\n"
+        runtime = FakeRuntime()
+        runtime.events = [
+            RuntimeEvent(kind="stdout", text=stdout),
+            RuntimeEvent(
+                kind="finished",
+                result=RuntimeResult(
+                    exit_code=0,
+                    stdout=stdout,
+                    stderr="",
+                    setup_stdout="",
+                    setup_stderr="",
+                    elapsed=0.1,
+                    timed_out=False,
+                ),
+            ),
+        ]
+        session = FakeSession(
+            runtime=runtime,
+            working_dir=tmp_path,
+            spec=DockerEnvironmentSpec(
+                name="test", docker=DockerConfig(image="test-image")
+            ),
+        )
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=pricing,
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+            model_provider=None,
+        )
+        agent.setup(cast("Session", session))
+        assert agent._trace_dir is not None
+        records = [
+            {
+                "type": "token_usage_record",
+                "payload": {
+                    "thread_id": thread,
+                    "response_id": response,
+                    "usage": usage,
+                },
+            }
+            for thread, response in [
+                ("root", "one"), ("root", "two"), ("child", "three")
+            ]
+        ]
+        (agent._trace_dir / "root.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in records[:2])
+        )
+        (agent._trace_dir / "child.jsonl").write_text(
+            "".join(json.dumps(row) + "\n" for row in records[::2])
+        )
+
+        agent.run("do something")
+
+        expected_cost = 0.0000003 if cached_only else 0.1815
+        expected_tokens = (
+            TokenUsage(input=3, cache_read=3)
+            if cached_only
+            else TokenUsage(
+                input=300_000, cache_read=240_000, cache_write=15_000,
+                output=3_000, reasoning=300,
+            )
+        )
+        assert agent.usage.cost == pytest.approx(expected_cost, abs=1e-12)
+        assert agent.usage.net_tokens == expected_tokens
+        agent.retry()
+        assert agent.usage.cost == pytest.approx(expected_cost, abs=1e-12)
+        assert agent.usage.net_tokens == expected_tokens
+        agent.cleanup()
+
+    def test_tiered_turn_totals_without_request_traces_are_rejected(
+        self, mock_cost_limits: AgentCostLimits
+    ) -> None:
+        agent = CodexAgent(
+            problem_name="test-problem",
+            verbose=False,
+            image="test-image",
+            cost_limits=mock_cost_limits,
+            pricing=APIPricing.model_validate(
+                {"prompt_tiers": [{"max_input_tokens": 272_000}]}
+            ),
+            credential=None,
+            binary="codex",
+            model=None,
+            timeout=None,
+            thinking=None,
+            max_thinking_tokens=None,
+            extra_args=[],
+            env={},
+            model_provider=None,
+        )
+
+        with pytest.raises(AgentError, match="CLI turn totals are insufficient"):
+            agent._sync_usage({"input_tokens": 300_000})
 
     def test_save_artifacts_copies_codex_traces(
         self, tmp_path, mock_cost_limits, mock_pricing
