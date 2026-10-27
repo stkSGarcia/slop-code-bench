@@ -24,6 +24,7 @@ from slop_code.common.llms import APIPricing
 from slop_code.common.llms import ModelDefinition
 from slop_code.common.llms import TokenUsage
 from slop_code.entrypoints.config.loader import load_agent_config
+from slop_code.entrypoints.config.loader import load_run_config
 from slop_code.execution import DockerConfig
 from slop_code.execution import DockerEnvironmentSpec
 from slop_code.execution.compose import WorkflowComposeConfig
@@ -91,6 +92,17 @@ class FakeSession:
         self.last_spawn_env_vars = dict(env_vars or {})
         self.last_spawn_mounts = dict(mounts or {})
         return self.runtime
+
+
+def _load_benchmark_agent_config(config_path: Path) -> CodexConfig:
+    """Supply the build identifier through the launcher's CLI interface."""
+    run_config = load_run_config(
+        cli_flags={"agent": str(config_path)},
+        cli_overrides=["agent.workflow.version=20000101T000000Z"],
+    )
+    config = build_agent_config(run_config.agent)
+    assert isinstance(config, CodexConfig)
+    return config
 
 
 @pytest.fixture
@@ -181,9 +193,7 @@ class TestCodexConfig:
             / "agents"
             / "codex-openspec.yaml"
         )
-        _, data = load_agent_config(config_path)
-
-        config = build_agent_config(data)
+        config = _load_benchmark_agent_config(config_path)
 
         assert isinstance(config, CodexConfig)
         assert config.workflow is not None
@@ -227,9 +237,7 @@ class TestCodexConfig:
             / "agents"
             / "codex-synergyspec.yaml"
         )
-        _, data = load_agent_config(config_path)
-
-        config = build_agent_config(data)
+        config = _load_benchmark_agent_config(config_path)
 
         assert isinstance(config, CodexConfig)
         assert config.workflow is not None
@@ -255,9 +263,7 @@ class TestCodexConfig:
     def test_repository_artnet_config_manages_neo4j_with_compose(self):
         repository = Path(__file__).parents[3]
         config_path = repository / "configs" / "agents" / "codex-artnet.yaml"
-        _, data = load_agent_config(config_path)
-
-        config = build_agent_config(data)
+        config = _load_benchmark_agent_config(config_path)
 
         assert isinstance(config, CodexConfig)
         assert config.workflow is not None
@@ -276,7 +282,10 @@ class TestCodexConfig:
         dockerfile = config.get_docker_file("base-image:latest")
 
         assert dockerfile is not None
-        assert "COPY --from=slop-artnet:1.4.3 /app /opt/artnet" in dockerfile
+        assert (
+            "COPY --from=slop-artnet:__SCB_WORKFLOW_BUILD_TIMESTAMP__ "
+            "/app /opt/artnet"
+        ) in dockerfile
 
     @pytest.mark.parametrize("workflow_mode", ["none", "openspec", "compose"])
     def test_prepare_docker_build_only_builds_configured_compose(
@@ -400,7 +409,14 @@ class TestCodexAgent:
     """Tests for CodexAgent."""
 
     @pytest.mark.parametrize(
-        "condition", ["openspec", "artnet", "synergyspec", "matrixspec"]
+        "condition",
+        [
+            "openspec",
+            "artnet",
+            "synergyspec",
+            "matrixspec",
+            "matrixspec-artnet",
+        ],
     )
     def test_repository_workflows_keep_runtime_uid_default(
         self,
@@ -417,8 +433,7 @@ class TestCodexAgent:
             / "agents"
             / f"codex-{condition}.yaml"
         )
-        _, data = load_agent_config(config_path)
-        config = build_agent_config(data)
+        config = _load_benchmark_agent_config(config_path)
         assert isinstance(config, CodexConfig)
         assert config.workflow is not None
         assert config.workflow.type == condition

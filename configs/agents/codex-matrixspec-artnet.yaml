@@ -1,0 +1,93 @@
+type: codex
+binary: codex
+docker_template: configs/agents/codex-artnet.j2
+
+version: "0.162.1"
+workflow:
+  type: matrixspec-artnet
+  changes_dir: matspec/changes
+  compose:
+    file: configs/agents/codex-artnet.compose.yaml
+    wait_timeout: 600
+    build_services: [artifactnet-cli]
+  install_commands:
+    - [sh, -c, 'ln -s /opt/artnet/bin/artnet.js "$NPM_CONFIG_PREFIX/bin/artnet"']
+    - [sh, -c, 'ln -s /opt/matrixspec/bin/matspec.js "$NPM_CONFIG_PREFIX/bin/matspec"']
+  init_commands:
+    - [matspec, init, ., --integration, codex, --no-template-update, --json]
+    - - sh
+      - -c
+      - |
+        mkdir -p .matspec-cli/workflows
+        cat > .matspec-cli/workflows/project.yaml <<'EOF'
+        extends: matspec
+        profile: light
+        finalization:
+          require_updated: []
+          coverage: []
+        EOF
+    - [sh, -c, 'mkdir -p .codex/skills && cp -R .agents/skills/. .codex/skills/']
+    - [artnet, init, --adapter, matspec]
+    - - sh
+      - -c
+      - |
+        cat > .artnet/config.yaml <<EOF
+        schema: .artnet/schema.yaml
+
+        neo4j:
+          uri: "${ARTNET_NEO4J_URI}"
+          user: neo4j
+          password: "12345678"
+          database: neo4j
+
+        embedding:
+          base_url: https://openrouter.ai/api/v1
+          model: openai/text-embedding-3-small
+          api_key_env: OPENROUTER_API_KEY
+
+        llm:
+          base_url: https://openrouter.ai/api/v1
+          model: openai/gpt-6-luna
+          api_key_env: OPENROUTER_API_KEY
+        EOF
+  env:
+    CI: "true"
+    NO_COLOR: "1"
+    MATSPEC_NO_REPORT: "1"
+    ARTNET_NEO4J_URI: bolt://neo4j:7687
+  env_from_host:
+    - OPENROUTER_API_KEY
+  skills:
+    - name: matspec
+      arguments:
+        - |
+          This benchmark invocation is one complete checkpoint. Create a new
+          uniquely named change using `matspec start <unique-id> --profile light
+          --json`. Do not reuse a previous checkpoint's change.
+
+          Benchmark policy: the checkpoint specification below is the task
+          authority. This unattended run authorizes generation, stage acceptance,
+          implementation, and archive after the applicable checks pass. Override
+          interactive skill instructions to ask questions or wait for approval.
+          Resolve unspecified details conservatively from the specification and
+          repository evidence; record assumptions as agent inferences, never as
+          human confirmations.
+
+          Complete the entire MatSpec Light lifecycle inside this one workflow
+          node: proposal, delta-spec, tasks, implementation, review, finalization,
+          and archive. Use `matspec go --json` and the returned stage contracts.
+          Use CLI commands to advance state; never edit .matspec-state.json.
+          Implement the code, execute relevant verification, and record completed
+          tasks through the CLI. Fix review blockers before accepting review.
+          Do not synchronize matspec/specs/spec.md or matspec/specs/design.md.
+          Do not finish after merely preparing documents or a plan, and do not
+          invent passing evidence or bypass validation or review guards.
+        - "{task}"
+timeout: 7200
+extra_args: []
+env: {}
+cost_limits:
+  cost_limit: 0
+  step_limit: 0
+  net_cost_limit: 0
+  max_retries: 0

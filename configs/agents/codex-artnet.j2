@@ -1,7 +1,7 @@
 FROM {{ base_image }}
 
 # Use the CLI built by ArtifactNet's Dockerfile through Compose.
-COPY --from=slop-artnet:1.4.3 /app /opt/artnet
+COPY --from=slop-artnet:__SCB_WORKFLOW_BUILD_TIMESTAMP__ /app /opt/artnet
 
 USER agent
 WORKDIR /workspace
@@ -14,8 +14,7 @@ ENV XDG_DATA_HOME="$HOME/.local/share"
 RUN printf '%s\n' 'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"' >> "$HOME/.bash_profile"
 
 RUN npm install -g @openai/codex@{{ version }} && \
-    mkdir -p "$HOME/.codex" && \
-    ln -s /opt/artnet/bin/artnet.js "$NPM_CONFIG_PREFIX/bin/artnet"
+    mkdir -p "$HOME/.codex"
 {% for command in workflow_install_commands %}
 RUN {{ command }}
 {% endfor %}

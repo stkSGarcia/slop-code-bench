@@ -7,7 +7,7 @@ services:
     build:
       context: ../../../artnet
       target: runtime-base
-    image: slop-artnet:1.4.3
+    image: slop-artnet:${SCB_WORKFLOW_BUILD_TIMESTAMP:?run via run-benchmark.sh}
 
   neo4j:
     image: neo4j:5-community

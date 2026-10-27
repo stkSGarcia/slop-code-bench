@@ -5,12 +5,12 @@ docker_template: configs/agents/codex-artnet.j2
 version: "0.162.1"
 workflow:
   type: artnet
-  version: "1.4.3"
   compose:
     file: configs/agents/codex-artnet.compose.yaml
     wait_timeout: 600
     build_services: [artifactnet-cli]
   install_commands:
+    - [sh, -c, 'ln -s /opt/artnet/bin/artnet.js "$NPM_CONFIG_PREFIX/bin/artnet"']
     - [npm, install, -g, "@fission-ai/openspec@1.7.0"]
   init_commands:
     - [openspec, config, set, delivery, both]
