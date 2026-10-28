@@ -1,4 +1,4 @@
-# Build CLIs with their own Dockerfiles; the agent image includes their files.
+# Build CLI images; the agent image includes their files.
 # Only ArtNet conditions start Neo4j for each benchmark problem.
 # Random loopback ports and project-scoped resources isolate concurrent problems.
 services:

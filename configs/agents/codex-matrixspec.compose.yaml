@@ -5,4 +5,25 @@ services:
     build:
       context: ../../../MatrixSpec
       target: runtime-base
+      dockerfile_inline: |
+        FROM node:22.21.1-bookworm-slim AS runtime-base
+
+        WORKDIR /app
+
+        COPY package.json package-lock.json ./
+        ARG MATRIXSPEC_VERSION=0.4.1-beta.3
+        RUN node -e 'require("node:assert/strict").equal(require("./package.json").version, process.env.MATRIXSPEC_VERSION)' && \
+            npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+
+        COPY bin ./bin
+        COPY src ./src
+        COPY templates ./templates
+        COPY workflow-packs ./workflow-packs
+        COPY packages ./packages
+        COPY scripts ./scripts
+        COPY docs/full-spec.md docs/full-design.md ./docs/
+        RUN node scripts/fix-bin-perms.js
+
+        ENTRYPOINT ["node", "/app/bin/matspec.js"]
+        CMD ["--help"]
     image: slop-matrixspec:0.4.1-beta.3

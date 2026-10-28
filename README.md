@@ -75,7 +75,7 @@ repository:
 ```text
 parent/
 ├── slop-code-bench/
-└── artnet/
+└── ArtifactNet/
 ```
 
 `configs/agents/codex-artnet.compose.yaml` builds the `runtime-base` target
@@ -85,6 +85,10 @@ the CLI and installs OpenSpec `1.7.0`. Node.js package
 installation and the ArtNet build run in Docker. The build uses the local
 checkout as it stands; changing an experiment label never checks out a Git
 tag or changes the code being built.
+
+The default context expects `../ArtifactNet/Dockerfile`, with matching
+capitalization. If the checkout has another directory name, update the
+`artifactnet-cli` build context in the Compose file.
 
 Export the API key in the shell that launches the benchmark. For interactive
 Bash sessions, this can be set in `~/.bashrc` and loaded with
@@ -108,17 +112,19 @@ the log. ArtNet executes Propose, Apply, and Archive for each checkpoint.
 ## MatrixSpec
 
 Place a MatrixSpec `0.4.1-beta.3` checkout at `../MatrixSpec`, beside this
-repository. Its Dockerfile must provide a `runtime-base` target with the CLI,
-production dependencies, templates, and workflow packs under `/app`.
-`configs/agents/codex-matrixspec.compose.yaml` builds that target as
-`slop-matrixspec:0.4.1-beta.3`. The native agent configuration selects
+repository. `configs/agents/codex-matrixspec.compose.yaml` contains an inline
+Dockerfile and builds the CLI, production dependencies, templates, and workflow
+packs under `/app` as `slop-matrixspec:0.4.1-beta.3`. Docker Compose 2.17 or
+later is required for `dockerfile_inline`. The build only reads the checkout;
+no Dockerfile or other changes are needed in the MatrixSpec repository.
+The native agent configuration selects
 `matrixspec-cli` through `workflow.compose.build_services` and sets
 `start_services: false`. The harness builds the CLI before refreshing the
 agent image and starting problem workers, without starting Compose runtime
 services. To use a different checkout, edit the build context in that
 Compose file.
 
-The MatrixSpec Dockerfile uses Node.js `22.21.1`, matching the agent runtime,
+The inline Dockerfile uses Node.js `22.21.1`, matching the agent runtime,
 checks the package version, and installs locked production dependencies with
 `npm ci`. Host-side dependency installation is unnecessary. The agent image
 copies `/app` to `/opt/matrixspec` and links `matspec` into its npm bin
