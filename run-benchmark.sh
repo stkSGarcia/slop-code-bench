@@ -10,10 +10,10 @@ workflow="matspec" # openspec, artnet, synergyspec, matspec, or matspec-artnet
 # Versions only label output directories; agent configs select dependencies.
 declare -A workflows=(
   [openspec]="OpenSpec|1.7.0|openspec"
-  [artnet]="ArtNet|1.4.3|artnet"
+  [artnet]="ArtNet|1.4.4|artnet"
   [synergyspec]="SynergySpec|3.0.2|synergyspec"
   [matspec]="MatrixSpec|0.4.1-beta.3|matrixspec"
-  [matspec-artnet]="MatrixSpec-ArtNet|0.4.1-beta.3-latest|matrixspec-artnet"
+  [matspec-artnet]="MatrixSpec-ArtNet|0.4.1-beta.3-1.4.4|matrixspec-artnet"
 )
 
 if [[ -z "$workflow" || -z "${workflows[$workflow]:-}" ]]; then

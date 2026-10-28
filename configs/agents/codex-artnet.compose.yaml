@@ -5,7 +5,7 @@ services:
   artifactnet-cli:
     profiles: [build]
     build:
-      context: ../../../artnet
+      context: ../../../ArtifactNet
       target: runtime-base
     image: slop-artnet:latest
 
