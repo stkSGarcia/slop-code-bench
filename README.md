@@ -9,32 +9,25 @@ top of the script to one of these five conditions:
 | Workflow | Agent configuration | Environment | Output directory |
 | --- | --- | --- | --- |
 | `openspec` | `configs/agents/codex-openspec.yaml` | `docker-python3.12-uv` | `outputs/OpenSpec-v1.7.0/` |
-| `artnet` | `configs/agents/codex-artnet.yaml` | `docker-python3.12-uv-artnet` | `outputs/ArtNet-v1.4.3/` |
+| `artnet` | `configs/agents/codex-artnet.yaml` | `docker-python3.12-uv` | `outputs/ArtNet-v1.4.3/` |
 | `synergyspec` | `configs/agents/codex-synergyspec.yaml` | `docker-python3.12-uv` | `outputs/SynergySpec-v3.0.2/` |
-| `matspec` | `configs/agents/codex-matrixspec.yaml` | `docker-python3.12-uv-matrixspec` | `outputs/MatrixSpec-v0.4.1-beta.3/` |
-| `matspec-artnet` | `configs/agents/codex-matrixspec-artnet.yaml` | `docker-python3.12-uv-matrixspec` | `outputs/MatrixSpec-ArtNet-v0.4.1-beta.3-artnet-1.4.4/` |
+| `matspec` | `configs/agents/codex-matrixspec.yaml` | `docker-python3.12-uv` | `outputs/MatrixSpec-v0.4.1-beta.3/` |
+| `matspec-artnet` | `configs/agents/codex-matrixspec-artnet.yaml` | `docker-python3.12-uv` | `outputs/MatrixSpec-ArtNet-v0.4.1-beta.3-latest/` |
 
 All five use Codex CLI `0.162.1`. The script currently selects
 `codex_auth/gpt-6.1-sol`, `thinking=high`, 16 problems, and four workers. Edit the
-`problems` array and `--num-workers` to change the batch. Output naming is
-controlled by `workflow_save_names` and `experiment_versions`. These versions
-are experiment labels: they name output directories and are saved as
-`experiment_version` in the build's `experiment.env`. They do not select source
-checkouts, dependency versions, or Docker images.
+`problems` array and `--num-workers` to change the batch. The `workflows` map
+stores each condition's output name, experiment version, and agent config
+suffix in one row, separated by `|`. These versions are experiment labels:
+they name output directories but do not select source checkouts, dependency
+versions, or Docker images.
 
-`run-benchmark.sh` generates one UTC timestamp and passes it through the
-existing `agent.workflow.version` CLI override. It exports the same value as
-`SCB_WORKFLOW_BUILD_TIMESTAMP` for Compose. For ArtNet conditions, it renders
-the Docker template's timestamp marker into a persistent `agent.j2` and
-passes that file through the existing `agent.docker_template` override. The
-agent and ArtNet images therefore share one build timestamp across workers,
-without changes to the Python harness. Codex, OpenSpec, and SynergySpec
-installation versions remain pinned in their dependency configuration.
-
-Generated templates and the experiment record are kept under
-`outputs/<Condition>-v<label>/.builds/<timestamp>/`. The saved run
-configuration includes the supplied workflow timestamp and rendered template
-path. Keep these files when retaining or resuming a run.
+The ArtNet CLI image uses `slop-artnet:latest`. Compose builds it from the local
+checkout before building the agent image, which copies its installed files.
+ArtNet and MatrixSpec launches refresh their CLI and agent images using
+Docker's layer cache. MatrixSpec uses `slop-matrixspec:0.4.1-beta.3`. Codex,
+OpenSpec, and SynergySpec installation versions remain pinned in their dependency
+configuration. All conditions use the shared environment directly.
 
 ## Common prerequisites
 
@@ -60,10 +53,8 @@ uv run slop-code problems ls
 
 The harness runs Docker containers as the invoking host user's UID/GID. This
 keeps bind-mounted workspaces writable when the host user is not UID 1000.
-The launcher supplies the required workflow timestamp and builds missing
-agent images automatically, reusing Docker's layer cache. Use the launcher
-for these conditions: the source YAML files intentionally omit the workflow
-version, and the shared ArtNet Docker template requires timestamp substitution.
+The launcher builds the required images automatically, reusing Docker's layer
+cache. All conditions use `configs/environments/docker-python3.12-uv.yaml`.
 
 ## OpenSpec and SynergySpec
 
@@ -88,10 +79,9 @@ parent/
 ```
 
 `configs/agents/codex-artnet.compose.yaml` builds the `runtime-base` target
-from ArtNet's Dockerfile as `slop-artnet:<build-timestamp>`. This target
-includes the skill prompts for both OpenSpec and MatSpec adapters. The launcher
-exports `SCB_WORKFLOW_BUILD_TIMESTAMP` for Compose and uses the same tag in
-the agent image's `COPY`. The agent installs OpenSpec `1.7.0`. Node.js package
+from ArtNet's Dockerfile as `slop-artnet:latest`. This target includes the
+skill prompts for both OpenSpec and MatSpec adapters. The agent image copies
+the CLI and installs OpenSpec `1.7.0`. Node.js package
 installation and the ArtNet build run in Docker. The build uses the local
 checkout as it stands; changing an experiment label never checks out a Git
 tag or changes the code being built.
@@ -117,49 +107,43 @@ the log. ArtNet executes Propose, Apply, and Archive for each checkpoint.
 
 ## MatrixSpec
 
-MatrixSpec currently runs from a read-only host checkout mounted at
-`/opt/matrixspec`. Before running on another machine, edit the host path in
-`configs/environments/docker-python3.12-uv-matrixspec.yaml`:
+Place a MatrixSpec `0.4.1-beta.3` checkout at `../MatrixSpec`, beside this
+repository. Its Dockerfile must provide a `runtime-base` target with the CLI,
+production dependencies, templates, and workflow packs under `/app`.
+`configs/agents/codex-matrixspec.compose.yaml` builds that target as
+`slop-matrixspec:0.4.1-beta.3`. The native agent configuration selects
+`matrixspec-cli` through `workflow.compose.build_services` and sets
+`start_services: false`. The harness builds the CLI before refreshing the
+agent image and starting problem workers, without starting Compose runtime
+services. To use a different checkout, edit the build context in that
+Compose file.
 
-```yaml
-extra_mounts:
-  /absolute/path/to/MatrixSpec:
-    bind: /opt/matrixspec
-    mode: ro
-```
+The MatrixSpec Dockerfile uses Node.js `22.21.1`, matching the agent runtime,
+checks the package version, and installs locked production dependencies with
+`npm ci`. Host-side dependency installation is unnecessary. The agent image
+copies `/app` to `/opt/matrixspec` and links `matspec` into its npm bin
+directory. Both Codex and MatSpec run in the agent container; the native
+condition starts no additional Compose services and mounts no MatrixSpec
+source directory. It runs the complete Light lifecycle in one workflow node
+per checkpoint.
 
-Replace the existing `/home/stk/projects/MatrixSpec` key with your checkout's
-absolute path, for example `/home/Samuel/projects/MatrixSpec`. Relative mount
-paths resolve against the temporary problem workspace, so `../MatrixSpec`
-does not refer to the repository's sibling directory.
-
-Use a `0.4.1-beta.3` checkout containing `bin/matspec.js`, its source and
-templates, and installed dependencies in `node_modules`. Install those
-dependencies in that checkout if needed:
-
-```bash
-cd /absolute/path/to/MatrixSpec
-npm ci
-```
-
-This local-checkout condition needs its dependencies prepared before the
-read-only mount is used. Codex and the `matspec` executable run inside Docker.
-The agent configuration links `matspec` into the container's npm bin directory
-and runs the complete Light lifecycle in one workflow node per checkpoint.
+Image preparation runs automatically through `slop-code run`, including
+resume, and through `slop-code docker build-agent`. The launcher only selects
+the run configuration and does not build images itself.
 
 ## MatrixSpec + ArtNet
 
 Set `workflow="matspec-artnet"` in `run-benchmark.sh` to combine MatrixSpec
 Light with the local ArtNet checkout. This condition uses the MatrixSpec
-environment and its read-only checkout mount described above. Prepare an
-ArtNet checkout containing the `matspec` adapter beside this repository and export
-`OPENROUTER_API_KEY`, as in the ArtNet setup.
+image described above. Prepare an ArtNet checkout containing the
+`matspec` adapter beside this repository and export `OPENROUTER_API_KEY`, as in
+the ArtNet setup.
 
-Both ArtNet conditions share `configs/agents/codex-artnet.compose.yaml` and
-`configs/agents/codex-artnet.j2`. Compose builds `slop-artnet:<build-timestamp>`
-from ArtNet's `runtime-base` target, which includes both adapters' bundled skill
-prompts, and runs Neo4j for each problem. Each launch uses its own timestamp.
-The condition has its own agent image and output directory.
+Both ArtNet conditions use `configs/agents/codex-artnet.compose.yaml`, which
+reuses the MatrixSpec build service through Compose `extends`. The combined
+condition builds both CLI images and runs Neo4j for each problem. Separate
+Docker templates select the required CLI images using the existing template
+parameters. Each condition has its own agent image and output directory.
 
 Initialization runs `matspec init`, copies the native skills to
 `.codex/skills`, then runs `artnet init --adapter matspec` to replace the
@@ -190,20 +174,25 @@ leave completed checkpoint artifacts alongside an incomplete problem run.
 
 To reevaluate a saved run, use `uv run slop-code eval outputs/<run-dir>`.
 
-Before resuming an ArtNet run or running its Compose cleanup command in a new
-shell, restore the exported timestamp from its build record:
+Resume a saved run with:
 
 ```bash
-source outputs/<Condition>-v<label>/.builds/<timestamp>/experiment.env
 uv run slop-code run --resume outputs/<run-dir>
 ```
+
+ArtNet and MatrixSpec conditions rebuild their CLI images from the current
+checkouts on resume. Image tags alone do not preserve historical source snapshots;
+retain the source revision used for an experiment. MatrixSpec's package
+version must still match `0.4.1-beta.3`.
 
 ## Archiving results
 
 Archive only after the benchmark has stopped writing, and check the saved
-`agent.workflow.type` and the experiment record under `.builds/` before
-grouping results under one condition/version name. `agent.workflow.version`
-in the run configuration records the build timestamp separately:
+`agent.workflow.type` in each run's configuration before grouping results
+under one condition/version label. ArtNet uses `agent.workflow.version: latest`,
+native MatrixSpec uses `0.4.1-beta.3`, and MatrixSpec + ArtNet uses
+`0.4.1-beta.3-latest`. The combined version labels MatrixSpec `0.4.1-beta.3`
+with ArtNet `latest`; the output directory carries the experiment label:
 
 ```bash
 cd outputs

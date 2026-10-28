@@ -1,0 +1,8 @@
+# Build the CLI without starting a MatrixSpec service container.
+services:
+  matrixspec-cli:
+    profiles: [build]
+    build:
+      context: ../../../MatrixSpec
+      target: runtime-base
+    image: slop-matrixspec:0.4.1-beta.3

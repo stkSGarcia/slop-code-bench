@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import shutil
+import subprocess
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +28,7 @@ from slop_code.common.llms import APIPricing
 from slop_code.common.llms import ModelDefinition
 from slop_code.common.llms import TokenUsage
 from slop_code.entrypoints.config.loader import load_agent_config
+from slop_code.entrypoints.config.loader import load_environment_config
 from slop_code.entrypoints.config.loader import load_run_config
 from slop_code.execution import DockerConfig
 from slop_code.execution import DockerEnvironmentSpec
@@ -95,12 +100,9 @@ class FakeSession:
 
 
 def _load_benchmark_agent_config(config_path: Path) -> CodexConfig:
-    """Supply the build identifier through the launcher's CLI interface."""
-    run_config = load_run_config(
-        cli_flags={"agent": str(config_path)},
-        cli_overrides=["agent.workflow.version=20000101T000000Z"],
-    )
-    config = build_agent_config(run_config.agent)
+    """Load the complete workflow configuration from its source YAML."""
+    _, data = load_agent_config(config_path)
+    config = build_agent_config(data)
     assert isinstance(config, CodexConfig)
     return config
 
@@ -282,10 +284,8 @@ class TestCodexConfig:
         dockerfile = config.get_docker_file("base-image:latest")
 
         assert dockerfile is not None
-        assert (
-            "COPY --from=slop-artnet:__SCB_WORKFLOW_BUILD_TIMESTAMP__ "
-            "/app /opt/artnet"
-        ) in dockerfile
+        assert "COPY --from=slop-artnet:latest /app /opt/artnet" in dockerfile
+        assert "slop-matrixspec" not in dockerfile
 
     @pytest.mark.parametrize("workflow_mode", ["none", "openspec", "compose"])
     def test_prepare_docker_build_only_builds_configured_compose(
@@ -371,11 +371,131 @@ class TestCodexConfig:
 
         assert prompt_path.read_text() == "{{ spec.strip() }}\n"
         assert "--prompt checkpoint-only" in script
-        assert "agent_config=configs/agents/codex-artnet.yaml" in script
-        assert "environment_config=docker-python3.12-uv-artnet" in script
+        assert (
+            "environment_config=configs/environments/docker-python3.12-uv.yaml"
+            in script
+        )
         assert '--agent "$agent_config"' in script
         assert '--environment "$environment_config"' in script
         assert "--num-workers 4" in script
+
+    @pytest.mark.parametrize(
+        ("workflow", "agent_name", "workflow_version"),
+        [
+            ("openspec", "openspec", "1.7.0"),
+            ("artnet", "artnet", "latest"),
+            ("synergyspec", "synergyspec", "3.0.2"),
+            ("matspec", "matrixspec", "0.4.1-beta.3"),
+            ("matspec-artnet", "matrixspec-artnet", "0.4.1-beta.3-latest"),
+        ],
+    )
+    def test_repository_launcher_uses_built_clis_and_shared_environment(
+        self,
+        workflow: str,
+        agent_name: str,
+        workflow_version: str,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """CLI files come from selected images without generated host mounts."""
+        repository = Path(__file__).parents[3]
+        script = "\n".join(
+            f'workflow="{workflow}"' if line.startswith("workflow=") else line
+            for line in (repository / "run-benchmark.sh")
+            .read_text()
+            .splitlines()
+        )
+        (tmp_path / "configs").symlink_to(
+            repository / "configs", target_is_directory=True
+        )
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        stub = (
+            f"#!{sys.executable}\n"
+            "import json\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "with Path(__file__).with_name('build-calls.jsonl').open('a') as log:\n"
+            "    log.write(json.dumps([Path(sys.argv[0]).name, *sys.argv[1:]]) + '\\n')\n"
+            "if sys.argv[1:4] == ['run', 'slop-code', 'run']:\n"
+            "    print(json.dumps(sys.argv[1:]))\n"
+        )
+        for executable in ("uv", "docker"):
+            stub_path = bin_dir / executable
+            stub_path.write_text(stub)
+            stub_path.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.delenv("SCB_WORKFLOW_BUILD_TIMESTAMP", raising=False)
+
+        bash = shutil.which("bash")
+        assert bash is not None
+        # Execute the repository launcher with trusted workflow cases.
+        result = subprocess.run(  # noqa: S603
+            [bash, "-c", script],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        arguments = json.loads(result.stdout)
+        calls = [
+            json.loads(line)
+            for line in (bin_dir / "build-calls.jsonl").read_text().splitlines()
+        ]
+        assert calls == [["uv", *arguments]]
+        selected_environment = arguments[arguments.index("--environment") + 1]
+        selected_agent = arguments[arguments.index("--agent") + 1]
+        assert selected_agent == f"configs/agents/codex-{agent_name}.yaml"
+        config = load_run_config(
+            cli_flags={
+                "agent": str(repository / selected_agent),
+                "environment": str(tmp_path / selected_environment),
+            },
+        )
+        _, baseline = load_environment_config(
+            repository / "configs/environments/docker-python3.12-uv.yaml"
+        )
+        assert (
+            selected_environment
+            == "configs/environments/docker-python3.12-uv.yaml"
+        )
+        assert not (tmp_path / "outputs").exists()
+        expected = DockerEnvironmentSpec.model_validate(baseline)
+        assert (
+            DockerEnvironmentSpec.model_validate(config.environment) == expected
+        )
+        assert config.agent["workflow"]["version"] == workflow_version
+        agent = build_agent_config(config.agent)
+        dockerfile = agent.get_docker_file(expected.get_base_image())
+        assert dockerfile is not None
+        assert (
+            "COPY --from=slop-artnet:latest /app /opt/artnet" in dockerfile
+        ) == ("artnet" in workflow)
+        assert (
+            "COPY --from=slop-matrixspec:0.4.1-beta.3 /app /opt/matrixspec"
+            in dockerfile
+        ) == ("matspec" in workflow)
+        assert agent.workflow is not None
+        if "artnet" in workflow or "matspec" in workflow:
+            assert agent.workflow.compose is not None
+            expected_services = []
+            if "artnet" in workflow:
+                expected_services.append("artifactnet-cli")
+            if "matspec" in workflow:
+                expected_services.append("matrixspec-cli")
+            assert agent.workflow.compose.build_services == tuple(
+                expected_services
+            )
+            assert agent.workflow.compose.start_services == (
+                "artnet" in workflow
+            )
+            prepare = MagicMock()
+            monkeypatch.setattr(WorkflowComposeConfig, "build_images", prepare)
+            assert agent.prepare_docker_build(expected) is True
+            prepare.assert_called_once_with(expected)
+        else:
+            assert agent.workflow.compose is None
 
     @pytest.mark.parametrize(
         "extra_args",

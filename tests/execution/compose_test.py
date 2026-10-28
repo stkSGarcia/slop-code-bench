@@ -74,6 +74,33 @@ def test_build_images_builds_only_selected_services(
     assert docker_environment.docker.network == "original-network"
 
 
+def test_build_only_workflow_does_not_start_problem_services(
+    compose_config: WorkflowComposeConfig,
+    docker_environment: DockerEnvironmentSpec,
+    tmp_path: Path,
+) -> None:
+    config = WorkflowComposeConfig(
+        file=compose_config.file,
+        build_services=("matrixspec-cli",),
+        start_services=False,
+    )
+    output = tmp_path / "problem-output"
+    with patch("slop_code.execution.compose.subprocess.run") as run:
+        config.build_images(docker_environment)
+        run.assert_called_once()
+        assert run.call_args.args[0][-2:] == ["build", "matrixspec-cli"]
+
+        for _ in range(2):
+            with config.problem_environment(
+                docker_environment, output
+            ) as environment:
+                assert environment is docker_environment
+        run.assert_called_once()
+
+    assert not output.exists()
+    assert docker_environment.docker.network == "original-network"
+
+
 def test_build_images_propagates_build_failure(
     compose_config: WorkflowComposeConfig,
     docker_environment: DockerEnvironmentSpec,

@@ -1,10 +1,16 @@
 type: codex
 binary: codex
+docker_template: configs/agents/codex-matrixspec.j2
 
 version: "0.162.1"
 workflow:
   type: matrixspec
+  version: 0.4.1-beta.3
   changes_dir: matspec/changes
+  compose:
+    file: configs/agents/codex-matrixspec.compose.yaml
+    build_services: [matrixspec-cli]
+    start_services: false
   install_commands:
     - [sh, -c, 'ln -s /opt/matrixspec/bin/matspec.js "$NPM_CONFIG_PREFIX/bin/matspec"']
   init_commands:

@@ -4,6 +4,7 @@ binary: codex
 version: "0.162.1"
 workflow:
   type: synergyspec
+  version: "3.0.2"
   changes_dir: synergyspec-selfevolving/changes
   install_commands:
     - [npm, install, -g, "synergyspec-selfevolving@3.0.2"]

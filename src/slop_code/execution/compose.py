@@ -23,7 +23,7 @@ logger = get_logger(__name__)
 
 
 class WorkflowComposeConfig(BaseModel):
-    """Compose services started once for each problem's agent workflow.
+    """Compose image builds and optional services for a problem workflow.
 
     Services must use the project's default network. Named volumes are kept
     after shutdown so resuming with the same lifecycle metadata reuses data.
@@ -40,6 +40,10 @@ class WorkflowComposeConfig(BaseModel):
     build_services: tuple[str, ...] = Field(
         default=(),
         description="Compose service images to build before the agent image.",
+    )
+    start_services: bool = Field(
+        default=True,
+        description="Start Compose runtime services for each problem.",
     )
 
     def build_images(self, environment: EnvironmentSpec) -> None:
@@ -80,6 +84,9 @@ class WorkflowComposeConfig(BaseModel):
             raise ValueError(
                 "Workflow Docker Compose requires a Docker environment."
             )
+        if not self.start_services:
+            yield environment
+            return
         compose_file = self.file.resolve()
         if not compose_file.is_file():
             raise FileNotFoundError(

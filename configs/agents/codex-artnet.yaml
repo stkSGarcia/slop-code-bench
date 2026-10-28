@@ -5,6 +5,7 @@ docker_template: configs/agents/codex-artnet.j2
 version: "0.162.1"
 workflow:
   type: artnet
+  version: latest
   compose:
     file: configs/agents/codex-artnet.compose.yaml
     wait_timeout: 600

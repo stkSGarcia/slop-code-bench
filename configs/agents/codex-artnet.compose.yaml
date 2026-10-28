@@ -1,5 +1,5 @@
-# Build ArtNet with its own Dockerfile; the agent image includes the CLI.
-# Only Neo4j runs for each benchmark problem.
+# Build CLIs with their own Dockerfiles; the agent image includes their files.
+# Only ArtNet conditions start Neo4j for each benchmark problem.
 # Random loopback ports and project-scoped resources isolate concurrent problems.
 services:
   artifactnet-cli:
@@ -7,7 +7,12 @@ services:
     build:
       context: ../../../artnet
       target: runtime-base
-    image: slop-artnet:${SCB_WORKFLOW_BUILD_TIMESTAMP:?run via run-benchmark.sh}
+    image: slop-artnet:latest
+
+  matrixspec-cli:
+    extends:
+      file: codex-matrixspec.compose.yaml
+      service: matrixspec-cli
 
   neo4j:
     image: neo4j:5-community

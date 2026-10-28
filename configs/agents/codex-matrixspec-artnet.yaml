@@ -1,15 +1,16 @@
 type: codex
 binary: codex
-docker_template: configs/agents/codex-artnet.j2
+docker_template: configs/agents/codex-matrixspec-artnet.j2
 
 version: "0.162.1"
 workflow:
   type: matrixspec-artnet
+  version: 0.4.1-beta.3-latest
   changes_dir: matspec/changes
   compose:
     file: configs/agents/codex-artnet.compose.yaml
     wait_timeout: 600
-    build_services: [artifactnet-cli]
+    build_services: [artifactnet-cli, matrixspec-cli]
   install_commands:
     - [sh, -c, 'ln -s /opt/artnet/bin/artnet.js "$NPM_CONFIG_PREFIX/bin/artnet"']
     - [sh, -c, 'ln -s /opt/matrixspec/bin/matspec.js "$NPM_CONFIG_PREFIX/bin/matspec"']

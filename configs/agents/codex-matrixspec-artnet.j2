@@ -1,0 +1,24 @@
+FROM {{ base_image }}
+
+COPY --from=slop-artnet:latest /app /opt/artnet
+COPY --from=slop-matrixspec:0.4.1-beta.3 /app /opt/matrixspec
+
+USER agent
+WORKDIR /workspace
+
+ENV NPM_CONFIG_PREFIX="$HOME/.npm-global"
+ENV PATH="$HOME/.npm-global/bin:$PATH"
+ENV XDG_CONFIG_HOME="$HOME/.config"
+ENV XDG_DATA_HOME="$HOME/.local/share"
+
+RUN printf '%s\n' 'export PATH="$NPM_CONFIG_PREFIX/bin:$PATH"' >> "$HOME/.bash_profile"
+
+RUN npm install -g @openai/codex@{{ version }} && \
+    mkdir -p "$HOME/.codex"
+{% for command in workflow_install_commands %}
+RUN {{ command }}
+{% endfor %}
+
+RUN chmod -R a+rwX "$HOME"
+
+CMD ["codex"]
