@@ -4,7 +4,8 @@ set -euo pipefail
 # Use home-directory temp space so Docker bind mounts can access it.
 # export SCB_WORKSPACE_DIR="${SCB_WORKSPACE_DIR:-$HOME/.slop-workspaces}"
 
-workflow="matspec" # openspec, artnet, synergyspec, matspec, or matspec-artnet
+# Usage: bash run-benchmark.sh [workflow] (default: artnet).
+workflow="${1:-artnet}" # openspec, artnet, synergyspec, matspec, or matspec-artnet
 
 # Values: output name | experiment version | agent config suffix.
 # Versions only label output directories; agent configs select dependencies.
