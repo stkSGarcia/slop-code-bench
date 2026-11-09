@@ -15,6 +15,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from slop_code.agent_runner.agents.codex import CodexAgent
 from slop_code.agent_runner.agents.codex import CodexConfig
@@ -262,30 +263,97 @@ class TestCodexConfig:
         )
         assert "delta" not in archive.arguments[1].lower()
 
-    def test_repository_artnet_config_manages_neo4j_with_compose(self):
+    @pytest.mark.parametrize("backend", ["ladybug", "neo4j"])
+    @pytest.mark.parametrize(
+        ("agent_name", "adapter", "build_services"),
+        [
+            ("artnet", "openspec", ("artifactnet-cli",)),
+            (
+                "matrixspec-artnet",
+                "matspec",
+                ("artifactnet-cli", "matrixspec-cli"),
+            ),
+        ],
+    )
+    def test_repository_artnet_configs_support_backend_switch(
+        self,
+        agent_name: str,
+        adapter: str,
+        build_services: tuple[str, ...],
+        backend: str,
+        tmp_path: Path,
+    ) -> None:
         repository = Path(__file__).parents[3]
-        config_path = repository / "configs" / "agents" / "codex-artnet.yaml"
-        config = _load_benchmark_agent_config(config_path)
+        config_path = (
+            repository / "configs" / "agents" / f"codex-{agent_name}.yaml"
+        )
+        _, data = load_agent_config(config_path)
+        if backend == "neo4j":
+            # Apply the documented edits to the same agent configuration.
+            workflow = data["workflow"]
+            workflow["compose"]["file"] = (
+                "configs/agents/codex-artnet.compose.yaml"
+            )
+            workflow["compose"]["start_services"] = True
+            workflow["init_commands"][-1][-1] = (
+                workflow["init_commands"][-1][-1].replace(
+                    "storage: ladybug", "storage: neo4j"
+                )
+            )
+        config = build_agent_config(data)
 
         assert isinstance(config, CodexConfig)
         assert config.workflow is not None
         assert config.workflow.compose is not None
-        assert (repository / config.workflow.compose.file).is_file()
-        assert config.workflow.compose.build_services == ("artifactnet-cli",)
-        assert config.workflow.env["ARTNET_NEO4J_URI"] == "bolt://neo4j:7687"
+        compose_path = repository / config.workflow.compose.file
+        compose = yaml.safe_load(compose_path.read_text())
+        expected_services = {"artifactnet-cli", "matrixspec-cli"}
+        if backend == "neo4j":
+            expected_services.add("neo4j")
+        assert set(compose["services"]) == expected_services
+        assert all(
+            service.get("profiles") == ["build"] or "extends" in service
+            for name, service in compose["services"].items()
+            if name != "neo4j"
+        )
+        assert ("volumes" in compose) == (backend == "neo4j")
+        assert config.workflow.compose.build_services == build_services
+        assert config.workflow.compose.start_services == (backend == "neo4j")
         assert config.workflow.init_commands[-2] == (
             "artnet",
             "init",
             "--adapter",
-            "openspec",
+            adapter,
         )
-        assert "${ARTNET_NEO4J_URI}" in config.workflow.init_commands[-1][2]
+        (tmp_path / ".artnet").mkdir()
+        # Execute only the config writer, without ArtNet or a database service.
+        subprocess.run(  # noqa: S603
+            config.workflow.init_commands[-1],
+            cwd=tmp_path,
+            env={**os.environ, **config.workflow.env},
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        storage_config = yaml.safe_load(
+            (tmp_path / ".artnet" / "config.yaml").read_text()
+        )
+        assert storage_config["storage"] == backend
+        database_path = Path(storage_config["ladybug"]["path"])
+        assert not database_path.is_absolute()
+        assert database_path.parent == Path(".artnet")
+        assert storage_config["neo4j"]["uri"] == "bolt://neo4j:7687"
+        assert (
+            storage_config["embedding"]["api_key_env"] == "OPENROUTER_API_KEY"
+        )
+        assert storage_config["llm"]["api_key_env"] == "OPENROUTER_API_KEY"
 
         dockerfile = config.get_docker_file("base-image:latest")
 
         assert dockerfile is not None
         assert "COPY --from=slop-artnet:latest /app /opt/artnet" in dockerfile
-        assert "slop-matrixspec" not in dockerfile
+        assert ("slop-matrixspec" in dockerfile) == (adapter == "matspec")
 
     @pytest.mark.parametrize("workflow_mode", ["none", "openspec", "compose"])
     def test_prepare_docker_build_only_builds_configured_compose(
@@ -487,9 +555,7 @@ class TestCodexConfig:
             assert agent.workflow.compose.build_services == tuple(
                 expected_services
             )
-            assert agent.workflow.compose.start_services == (
-                "artnet" in workflow
-            )
+            assert agent.workflow.compose.start_services is False
             prepare = MagicMock()
             monkeypatch.setattr(WorkflowComposeConfig, "build_images", prepare)
             assert agent.prepare_docker_build(expected) is True

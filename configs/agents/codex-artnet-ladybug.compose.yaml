@@ -1,0 +1,13 @@
+# Build CLI images; Ladybug runs inside each agent's workspace.
+services:
+  artifactnet-cli:
+    profiles: [build]
+    build:
+      context: ../../../ArtifactNet
+      target: runtime-base
+    image: slop-artnet:latest
+
+  matrixspec-cli:
+    extends:
+      file: codex-matrixspec.compose.yaml
+      service: matrixspec-cli

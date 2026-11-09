@@ -1,13 +1,11 @@
 # Build CLI images; the agent image includes their files.
-# Only ArtNet conditions start Neo4j for each benchmark problem.
+# The Neo4j backend starts one database per benchmark problem.
 # Random loopback ports and project-scoped resources isolate concurrent problems.
 services:
   artifactnet-cli:
-    profiles: [build]
-    build:
-      context: ../../../ArtifactNet
-      target: runtime-base
-    image: slop-artnet:latest
+    extends:
+      file: codex-artnet-ladybug.compose.yaml
+      service: artifactnet-cli
 
   matrixspec-cli:
     extends:
@@ -15,7 +13,7 @@ services:
       service: matrixspec-cli
 
   neo4j:
-    image: neo4j:5-community
+    image: neo4j:2026.06-community
     ports:
       - "127.0.0.1::7474"
       - "127.0.0.1::7687"

@@ -8,9 +8,10 @@ workflow:
   version: 0.4.1-beta.3-latest
   changes_dir: matspec/changes
   compose:
-    file: configs/agents/codex-artnet.compose.yaml
+    file: configs/agents/codex-artnet-ladybug.compose.yaml
     wait_timeout: 600
     build_services: [artifactnet-cli, matrixspec-cli]
+    start_services: false # Neo4j: true with codex-artnet.compose.yaml.
   install_commands:
     - [sh, -c, 'ln -s /opt/artnet/bin/artnet.js "$NPM_CONFIG_PREFIX/bin/artnet"']
     - [sh, -c, 'ln -s /opt/matrixspec/bin/matspec.js "$NPM_CONFIG_PREFIX/bin/matspec"']
@@ -34,6 +35,10 @@ workflow:
       - |
         cat > .artnet/config.yaml <<EOF
         schema: .artnet/schema.yaml
+
+        storage: ladybug
+        ladybug:
+          path: .artnet/graph.lbdb
 
         neo4j:
           uri: "${ARTNET_NEO4J_URI}"

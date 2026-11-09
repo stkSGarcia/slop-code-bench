@@ -69,8 +69,8 @@ for those skipped evidence gates.
 
 ## ArtNet
 
-Place the ArtNet source checkout intended for the experiment next to this
-repository:
+The ArtNet workflows use Ladybug by default. Place the Ladybug-enabled
+ArtNet source checkout next to this repository:
 
 ```text
 parent/
@@ -78,8 +78,8 @@ parent/
 └── ArtifactNet/
 ```
 
-`configs/agents/codex-artnet.compose.yaml` builds the `runtime-base` target
-from ArtNet's Dockerfile as `slop-artnet:latest`. This target includes the
+`configs/agents/codex-artnet-ladybug.compose.yaml` builds the `runtime-base`
+target from ArtNet's Dockerfile as `slop-artnet:latest`. It includes the
 skill prompts for both OpenSpec and MatSpec adapters. The agent image copies
 the CLI and installs OpenSpec `1.7.0`. Node.js package
 installation and the ArtNet build run in Docker. The build uses the local
@@ -98,16 +98,33 @@ Bash sessions, this can be set in `~/.bashrc` and loaded with
 export OPENROUTER_API_KEY="<your-api-key>"
 ```
 
-Docker Compose must be available as `docker compose`. The harness starts one
-Neo4j service per problem, waits for its health check, and attaches the agent
-to that problem's private network. The agent connects to `bolt://neo4j:7687`;
-HTTP and Bolt host ports are allocated dynamically on loopback. Workers do
-not need a preconfigured Neo4j URI pool.
+Docker Compose must be available as `docker compose` to build CLI images.
+Ladybug stores its database at the configured `ladybug.path` in each problem's
+workspace. With `start_services: false`, no Neo4j service is started.
+ArtNet executes Propose, Apply, and Archive for each checkpoint.
 
-After each problem, Compose removes its containers and network, retaining
-named volumes. The output's `workflow-compose.json` records the project name
-for resuming and manual cleanup. If cleanup fails, use the command printed in
-the log. ArtNet executes Propose, Apply, and Archive for each checkpoint.
+### Switching storage backends
+
+Each workflow keeps one agent configuration: `codex-artnet.yaml` or
+`codex-matrixspec-artnet.yaml` under `configs/agents/`. The launcher continues
+to select these files. To switch backends, edit these settings in that file:
+
+| Setting | Ladybug | Neo4j |
+| --- | --- | --- |
+| `workflow.compose.file` | `configs/agents/codex-artnet-ladybug.compose.yaml` | `configs/agents/codex-artnet.compose.yaml` |
+| `workflow.compose.start_services` | `false` | `true` |
+| `storage` in the generated `.artnet/config.yaml` | `ladybug` | `neo4j` |
+
+Both connection configurations remain in the config writer under
+`workflow.init_commands`; `storage` selects which one ArtNet uses. Edit that
+writer to persist the choice across initialization. Both backends share the
+`slop-artnet:latest` image built from `../ArtifactNet` and use the original
+`codex-artnet.j2` or `codex-matrixspec-artnet.j2` template. The Neo4j Compose
+file reuses the same CLI build through `extends` and starts one Neo4j
+2026.06 service per problem, with dynamic loopback ports and a private network.
+It retains named database volumes after shutdown; `workflow-compose.json`
+records the project for resuming and cleanup. Both backends require
+`OPENROUTER_API_KEY`.
 
 ## MatrixSpec
 
@@ -145,9 +162,9 @@ image described above. Prepare an ArtNet checkout containing the
 `matspec` adapter beside this repository and export `OPENROUTER_API_KEY`, as in
 the ArtNet setup.
 
-Both ArtNet conditions use `configs/agents/codex-artnet.compose.yaml`, which
-reuses the MatrixSpec build service through Compose `extends`. The combined
-condition builds both CLI images and runs Neo4j for each problem. Separate
+Both ArtNet conditions select the Compose file for their storage backend,
+which reuses the MatrixSpec build service through Compose `extends`. The
+combined condition builds both CLI images and uses Ladybug by default. Separate
 Docker templates select the required CLI images using the existing template
 parameters. Each condition has its own agent image and output directory.
 
