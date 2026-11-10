@@ -324,6 +324,8 @@ class TestCodexConfig:
             "init",
             "--adapter",
             adapter,
+            "--agent",
+            "codex",
         )
         (tmp_path / ".artnet").mkdir()
         # Execute only the config writer, without ArtNet or a database service.

@@ -169,8 +169,8 @@ Docker templates select the required CLI images using the existing template
 parameters. Each condition has its own agent image and output directory.
 
 Initialization runs `matspec init`, copies the native skills to
-`.codex/skills`, then runs `artnet init --adapter matspec` to replace the
-main matspec skill and the proposal, delta-spec, tasks, and review skills
+`.codex/skills`, then runs `artnet init --adapter matspec --agent codex` to
+replace the main matspec skill and the proposal, delta-spec, tasks, and review skills
 with ArtNet's versions, preserving the native implementation skill. The
 entire Light lifecycle still runs in one Codex session per checkpoint; its
 checkpoint prompt follows the native MatrixSpec prompt except that full

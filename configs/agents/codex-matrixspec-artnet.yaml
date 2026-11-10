@@ -29,7 +29,7 @@ workflow:
           coverage: []
         EOF
     - [sh, -c, 'mkdir -p .codex/skills && cp -R .agents/skills/. .codex/skills/']
-    - [artnet, init, --adapter, matspec]
+    - [artnet, init, --adapter, matspec, --agent, codex]
     - - sh
       - -c
       - |

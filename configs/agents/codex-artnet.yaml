@@ -17,7 +17,7 @@ workflow:
   init_commands:
     - [openspec, config, set, delivery, both]
     - [openspec, init, ., --tools, codex, --profile, core, --force, --no-animation]
-    - [artnet, init, --adapter, openspec]
+    - [artnet, init, --adapter, openspec, --agent, codex]
     - - sh
       - -c
       - |
