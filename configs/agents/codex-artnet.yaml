@@ -27,6 +27,7 @@ workflow:
         storage: ladybug
         ladybug:
           path: .artnet/graph.lbdb
+          buffer_pool_size: 3221225472 # 3 GiB
 
         neo4j:
           uri: "${ARTNET_NEO4J_URI}"
