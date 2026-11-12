@@ -40,9 +40,22 @@ uv sync --locked --python 3.12
 docker info
 ```
 
-The `codex_auth` provider reads `~/.codex/auth.json`. Supply that file on the
-benchmark host before running. The separate `OPENROUTER_API_KEY` below is
-needed by both conditions that use ArtNet.
+The default `codex_auth` provider reads `~/.codex/auth.json`. Supply that file
+on the benchmark host before running.
+
+To use OpenRouter API key authentication instead, set
+`model="openrouter/gpt-6.1-sol"` near the top of `run-benchmark.sh` and export
+your key in the shell that launches the benchmark:
+
+```bash
+export OPENROUTER_API_KEY="<your-openrouter-api-key>"
+bash run-benchmark.sh artnet
+```
+
+The model configuration maps this to OpenRouter's `openai/gpt-6.1-sol`
+model and Responses API endpoint. ArtNet workflows also require
+`OPENROUTER_API_KEY` for their internal model and embedding calls, including
+when the Codex agent uses `codex_auth`.
 
 For comparable experiments, use the same problem catalog release:
 

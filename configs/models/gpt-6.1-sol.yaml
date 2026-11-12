@@ -1,5 +1,11 @@
 internal_name: gpt-6.1-sol
 provider: openai
+provider_slugs:
+  openrouter: openai/gpt-6.1-sol
+agent_specific:
+  codex:
+    # Resolve the OpenAI-compatible endpoint from the selected provider.
+    endpoint: openai
 pricing:
   # Standard USD per million tokens: https://developers.openai.com/api/docs/pricing
   # Base rates apply above 272K input tokens.

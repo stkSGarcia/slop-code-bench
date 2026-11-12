@@ -7,6 +7,10 @@ set -euo pipefail
 # Usage: bash run-benchmark.sh [workflow] (default: artnet).
 workflow="${1:-artnet}" # openspec, artnet, synergyspec, matspec, or matspec-artnet
 
+# Choose Codex auth or OpenRouter API key authentication here.
+model="codex_auth/gpt-6.1-sol"
+# model="openrouter/gpt-6.1-sol"
+
 # Values: output name | experiment version | agent config suffix.
 # Versions only label output directories; agent configs select dependencies.
 declare -A workflows=(
@@ -61,8 +65,8 @@ exec uv run slop-code run \
   --agent "$agent_config" \
   --environment "$environment_config" \
   --prompt checkpoint-only \
-  --model codex_auth/gpt-6.1-sol \
-  --num-workers 4 \
+  --model "$model" \
+  --num-workers 8 \
   "${problem_args[@]}" \
   thinking=high \
   pass_policy=any-case \
