@@ -15,10 +15,10 @@ model="codex_auth/gpt-6.1-sol"
 # Versions only label output directories; agent configs select dependencies.
 declare -A workflows=(
   [openspec]="OpenSpec|1.7.0|openspec"
-  [artnet]="ArtNet|1.4.4|artnet"
+  [artnet]="ArtNet|1.5.0|artnet"
   [synergyspec]="SynergySpec|3.0.2|synergyspec"
   [matspec]="MatrixSpec|0.4.1-beta.3|matrixspec"
-  [matspec-artnet]="MatrixSpec-ArtNet|0.4.1-beta.3-1.4.4|matrixspec-artnet"
+  [matspec-artnet]="MatrixSpec-ArtNet|0.4.1-beta.3-1.5.0|matrixspec-artnet"
 )
 
 if [[ -z "$workflow" || -z "${workflows[$workflow]:-}" ]]; then
